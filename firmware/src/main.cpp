@@ -1,3 +1,4 @@
+#include <Arduino.h>
 #include <Wire.h>
 #include <MPU6050.h>
 
@@ -279,16 +280,18 @@ void fallDetectionTask(void *pvParameters) {
       }
 
       case STATE_FALL_CONFIRMED:
+      Serial.printf("FALL,%lu\n", millis()); // add this line to signal fall event to Python bridge
         // Signal activity trigger task
         xEventGroupSetBits(eventGroup, ACTIVITY_TRIGGERED_BIT);
         fallState = STATE_NORMAL;  // Reset to normal state
         break;
     }
 
-    // Debug output
+    /*
+    // Debug output for serial plotter
     Serial.print(">accelMag: ");
     Serial.print(sensorData.accelMag, 2);
-    Serial.print(" gyroMag: ");
+    Serial.print(",gyroMag: ");
     Serial.println(sensorData.gyroMag, 2);
 
     static unsigned long lastPrint = 0;
@@ -301,6 +304,19 @@ void fallDetectionTask(void *pvParameters) {
       Serial.print(" | State: ");
       Serial.println(fallState);
     }
+    */
+
+    // Debug output - single consistent format for Python bridge
+  static unsigned long lastPrint = 0;
+  if (millis() - lastPrint >= 50) {
+      lastPrint = millis();
+      Serial.printf("DATA,%lu,%.2f,%.2f,%d\n",
+          sensorData.timestamp,
+          sensorData.accelMag,
+          sensorData.gyroMag,
+          (int)fallState
+      );
+  }
     
     vTaskDelay(20 / portTICK_PERIOD_MS);  // 50Hz sampling
   }
