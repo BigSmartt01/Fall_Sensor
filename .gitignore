@@ -1,55 +1,72 @@
-# General OS junk
+# =========================
+# OS / System
+# =========================
 .DS_Store
 Thumbs.db
 
+# =========================
 # Logs
+# =========================
 *.log
 
-# Build / binaries
+# =========================
+# Build / Firmware Artifacts
+# =========================
 *.bin
 *.elf
 *.hex
 *.map
 
-# Arduino / PlatformIO
-.pio
+# =========================
+# PlatformIO
+# =========================
 .pio/
 .pioenvs/
 .pio/libdeps/
-.pio/build/
-.pio/test/
 .pio/.cache/
 .pio/.lock
-.pio/lib/
-.pio/build-*/ 
-.pio/test-*/
 
-# VSCode / IDE
+# =========================
+# IDE / Editor
+# =========================
 .vscode/
-.vscode/.browse.c_cpp.db*
-.vscode/c_cpp_properties.json
-.vscode/launch.json
-.vscode/ipch
 .idea/
 *.swp
 
-# Node / Python (if used for dashboards/scripts)
-node_modules/
+# Optional VSCode ignores
+.vscode/.browse.c_cpp.db*
+.vscode/ipch
+.vscode/c_cpp_properties.json
+.vscode/launch.json
+
+# =========================
+# Python
+# =========================
 __pycache__/
 *.pyc
+.venv/
+venv/
 
-# InfluxDB / Grafana
+# =========================
+# Node
+# =========================
+node_modules/
+
+# =========================
+# Docker Persistent Data
+# =========================
 influxdb/data/
 grafana/data/
 grafana/plugins/
 grafana/logs/
 
-# Dashboards exports
-*.json.backup
+# =========================
+# Temporary / Backup Files
+# =========================
 *.tmp
-
-# Hardware CAD / EDA
 *.bak
-*.tmp
 *.cache
 *.lock
+
+# Dashboard backups only
+*.json.backup

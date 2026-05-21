@@ -1,0 +1,4 @@
+pyserial
+influxdb-client
+pyqtgraph
+PyQt6

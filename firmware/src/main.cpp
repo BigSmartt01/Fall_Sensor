@@ -308,7 +308,7 @@ void fallDetectionTask(void *pvParameters) {
 
     // Debug output - single consistent format for Python bridge
   static unsigned long lastPrint = 0;
-  if (millis() - lastPrint >= 50) {
+  if (millis() - lastPrint >= 20) {
       lastPrint = millis();
       Serial.printf("DATA,%lu,%.2f,%.2f,%d\n",
           sensorData.timestamp,
