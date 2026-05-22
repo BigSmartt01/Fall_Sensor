@@ -2,197 +2,229 @@
 
 ## Overview
 
-Fall Sensor is an intelligent fall detection system built on the ESP32 microcontroller using the MPU6050 6-axis motion sensor (accelerometer + gyroscope). The system uses a state machine algorithm to reliably detect human falls through multi-stage analysis, distinguishing true fall events from everyday motion and false alarms.
+Fall Sensor is an intelligent fall detection system built on the ESP32-S3 microcontroller using the MPU6050 6-axis motion sensor (accelerometer + gyroscope). The system uses a state machine algorithm to reliably detect human falls through multi-stage analysis, distinguishing true fall events from everyday motion and false alarms.
+
+Intended for elderly users, the device is designed for waist or lower-back placement to capture the body's center of mass during a fall - the most reliable position for distinguishing genuine falls from normal activity.
 
 ## Features
 
-- **Real-time Fall Detection**: Processes accelerometer and gyroscope data at 50Hz
-- **Multi-stage Verification**: Uses a 4-stage state machine to confirm falls
-- **FreeRTOS Task-Based Architecture**: Two concurrent tasks for sensor processing and alerting
-- **Thread-Safe State Sharing**: FreeRTOS EventGroups for safe inter-task communication
-- **Adaptive Baseline**: Continuous low-pass filtering of gravity vector for orientation reference
-- **Minimal False Positives**: Combines freefall detection, impact detection, stillness verification, and orientation change analysis
+- Real-time fall detection processing accelerometer and gyroscope data at 50Hz
+- Multi-stage 4-state verification combining freefall, impact, stillness, and orientation analysis
+- FreeRTOS task-based architecture with two concurrent tasks for sensor processing and alerting
+- Thread-safe state sharing via FreeRTOS EventGroups
+- Adaptive gravity baseline using continuous low-pass filtering for accurate orientation reference
+- Live data dashboard with PyQtGraph for real-time waveform monitoring during testing
+- Simultaneous InfluxDB logging with Grafana for post-event analysis and threshold tuning
+- Docker-based visualization stack for portable, reproducible setup
 
-## Hardware Requirements
+## Hardware
 
-- **Microcontroller**: ESP32 (or ESP32-S3 variant)
-- **IMU Sensor**: MPU6050 (6-axis motion sensor)
-- **Communication**: I2C interface
-- **GPIO Pins**: 
-  - SDA: Pin 21 (configurable)
-  - SCL: Pin 22 (configurable)
-- **Optional**: Buzzer/Alert output on configurable pin
+- Microcontroller: ESP32-S3
+- IMU Sensor: MPU6050 (6-axis, I2C address 0x68)
+- Interface: I2C
+- SDA: Pin 16, SCL: Pin 17
+- Planned hardware upgrade: BMI160 (lower noise, lower power, better suited for wearable use)
+- Enclosure: TBD (perfboard build in progress, components on order)
 
 ## Project Structure
 
 ```
 Fall_Sensor/
-│
-├── firmware/        # ESP32/MPU6050 code
-├── docs/            # Documentation, notes, diagrams
-├── hardware/        # Schematics, PCB, BOM
-├── visualization/   # All data visualization + monitoring
-│   ├── influxdb/    # Configs, scripts, docker-compose
-│   ├── grafana/     # Dashboards, JSON exports
-│   └── dashboards/  # Custom dashboard definitions
-├── README.md        # This document
-└── tests/           # Experimental scripts, prototypes
+├── firmware/           # ESP32-S3 / MPU6050 PlatformIO project
+├── docs/               # Documentation, notes, diagrams
+│   └── ERRORS_AND_FIXES.md
+├── hardware/           # Schematics, PCB, BOM
+├── visualization/      # All data visualization and monitoring tools
+│   ├── bridge.py       # Serial to InfluxDB bridge script
+│   ├── dashboard.py    # PyQtGraph real-time dashboard
+│   ├── docker-compose.yml
+│   ├── influxdb/       # InfluxDB configs
+│   ├── grafana/        # Grafana dashboard exports
+│   └── dashboards/     # Custom dashboard definitions
+├── tests/              # Experimental scripts, prototypes
+├── requirements.txt    # Python dependencies
+├── .gitignore
+└── README.md
 ```
 
-## Building & Uploading
+## Python Dependencies
+
+Install all visualization dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+Contents of `requirements.txt`:
+```
+pyserial
+influxdb-client
+pyqtgraph
+PyQt6
+numpy
+```
+
+## Visualization Stack
+
+### Real-Time Dashboard (PyQtGraph)
+
+The primary tool for active fall simulation testing. Runs over USB serial and provides serial-plotter-speed waveform updates with fall event markers.
+
+```bash
+cd visualization
+python dashboard.py
+```
+
+Features:
+- Scrolling accel and gyro magnitude waveforms updated every 20ms
+- Dashed threshold lines for freefall (3.0), impact (20.0), and stillness (25.0)
+- State machine card with color coding per stage
+- Red vertical marker injected at the exact sample where a fall was confirmed
+- Marker scrolls with the waveform and is removed cleanly when it leaves the screen
+- Pause/Resume button to freeze the graph and inspect fall events without losing live data
+- Simultaneous InfluxDB write in the background
+
+### InfluxDB + Grafana (Docker)
+
+Used for post-event analysis, long-term logging, and threshold tuning from stored data.
+
+```bash
+cd visualization
+docker compose up -d
+```
+
+- InfluxDB UI: http://localhost:8086
+- Grafana: http://localhost:3000
+- Bucket: `fallsensor`
+- Org: `smartlab`
+
+### Serial Output Format
+
+The firmware outputs a consistent CSV-style format parseable by both the bridge and dashboard:
+
+```
+DATA,<timestamp_ms>,<accelMag>,<gyroMag>,<state>
+FALL,<timestamp_ms>
+```
+
+Example:
+```
+DATA,27496,9.95,26.69,0
+DATA,28816,4.31,505.80,1
+FALL,31522
+```
+
+State values: 0=NORMAL, 1=FREEFALL, 2=IMPACT, 3=POST-IMPACT STILLNESS, 4=FALL CONFIRMED
+
+## Building and Uploading Firmware
 
 ### Prerequisites
 
-- [PlatformIO CLI](https://platformio.org/install/cli) or PlatformIO IDE
-- Python 3.6+ (for PlatformIO)
-- USB cable (for ESP32 programming)
+- PlatformIO (VS Code extension or CLI)
+- USB cable
 
 ### Build
 
 ```bash
-platformio run --environment esp32dev
+platformio run --environment esp32-s3-devkitc-1
 ```
 
-### Upload to ESP32
+### Upload
 
 ```bash
-platformio run --target upload --environment esp32dev
+platformio run --target upload --environment esp32-s3-devkitc-1
 ```
 
-### Monitor Serial Output
+### Monitor Serial
 
 ```bash
 platformio device monitor --baud 115200
 ```
 
-## How It Works
+Note: close serial monitor before running dashboard.py or bridge.py - only one process can hold the COM port at a time.
 
-### Fall Detection Algorithm
+## Fall Detection Algorithm
 
 The system uses a 4-stage state machine:
 
-#### **Stage 1: Freefall Detection (STATE_FREEFALL)**
-- Monitors acceleration magnitude
-- Freefall threshold: **< 3.0 m/s²** (gravity removed)
-- Timeout: **400ms** (real freefall lasts 150-400ms)
-- Triggers when device rapidly loses gravitational reference
+**Stage 1: Freefall Detection (STATE_FREEFALL)**
+- Accel magnitude drops below 3.0 m/s²
+- Timeout: 400ms (real human freefall lasts 150-400ms)
+- Gravity vector continuously maintained via low-pass filter during STATE_NORMAL
 
-#### **Stage 2: Impact Detection (STATE_IMPACT)**
-- Detects sudden acceleration change
-- Impact threshold: **> 20.0 m/s²**
-- Confirms collision with ground/surface
-- Window: 500ms
+**Stage 2: Impact Detection (STATE_IMPACT)**
+- Accel magnitude exceeds 20.0 m/s²
+- Window: 500ms after freefall
 
-#### **Stage 3: Post-Impact Stillness (STATE_POST_IMPACT_STILLNESS)**
-- Verifies person remains still after impact
-- Checks gyroscope magnitude: **< 25 °/s**
-- Acceleration variance: **< 1.0**
-- Duration: **2.5 seconds** minimum
-- Distinguishes true falls from stumbles or recoveries
+**Stage 3: Post-Impact Stillness (STATE_POST_IMPACT_STILLNESS)**
+- Gyro magnitude below 25.0 deg/s
+- Accel variance below 1.0
+- Sustained for 2.5 seconds minimum
 
-#### **Stage 4: Orientation Verification (STATE_FALL_CONFIRMED)**
-- Compares current body orientation to pre-fall baseline
-- Orientation change threshold: **> 0.5 m/s²**
-- Confirms person has changed position (not simply dropped and caught something)
+**Stage 4: Orientation Verification (STATE_FALL_CONFIRMED)**
+- Orientation change vs pre-fall gravity baseline exceeds 0.5 m/s²
+- Confirms body position has changed, not a stumble or recovery
 
 ### Gravity Vector Management
 
-The system maintains a continuous baseline of the gravitational vector (true resting orientation) using a **low-pass filter** applied during normal state:
+A low-pass filter continuously tracks the resting orientation during normal state:
 
 ```
-gravity = gravity × (1 - α) + current_accel × α
-where α = 0.05 (filter coefficient)
+gravity = gravity x (1 - alpha) + current_accel x alpha
+alpha = 0.05
 ```
 
-This provides an accurate baseline for detecting significant orientation changes that occur during an actual fall.
+This ensures the orientation baseline is always current before any fall begins.
 
-## Configuration
+## Threshold Tuning
 
-### Sensor Calibration
-
-Edit the threshold values in `src/main.cpp` to tune sensitivity:
+Edit in `firmware/src/main.cpp`:
 
 ```cpp
-const float FREEFALL_THRESHOLD = 3.0;           // Lower = more sensitive
-const float IMPACT_THRESHOLD = 20.0;            // Lower = more sensitive
-const float GYRO_STILLNESS_THRESHOLD = 25.0;    // Lower = more strict
-const float ORIENTATION_CHANGE_THRESHOLD = 0.5; // Higher = more strict
+const float FREEFALL_THRESHOLD = 3.0;
+const float IMPACT_THRESHOLD = 20.0;
+const float GYRO_STILLNESS_THRESHOLD = 25.0;
+const float ORIENTATION_CHANGE_THRESHOLD = 0.5;
+const unsigned long FREEFALL_TIMEOUT = 400;
+const unsigned long IMPACT_WINDOW = 500;
+const unsigned long POST_IMPACT_STILLNESS_DURATION = 2500;
 ```
 
-### I2C Pin Configuration
-
-Modify pin definitions (default: 21 and 22):
-
-```cpp
-#define SDA_PIN 21
-#define SCL_PIN 22
-```
-
-Alternative pins (commented out):
-```cpp
-//#define SDA_PIN 16
-//#define SCL_PIN 17
-```
+Use the PyQtGraph dashboard during physical testing to observe threshold crossings in real time, then use Grafana to review stored data from each session.
 
 ## RTOS Task Structure
 
-### Task 1: Fall Detection (Priority 2, 4096 bytes stack)
-- Reads sensor data from MPU6050
-- Executes state machine logic
-- Sampling rate: 50Hz (20ms interval)
-- Sets EventGroup bits when fall is confirmed
+**Task 1: Fall Detection (Priority 2, 4096 bytes stack)**
+- Reads MPU6050 via I2C at 50Hz
+- Runs state machine logic
+- Signals fall confirmation via FreeRTOS EventGroup
 
-### Task 2: Activity Trigger (Priority 1, 2048 bytes stack)
-- Waits for fall detection signal via EventGroup
-- Triggers alert/buzzer logic
-- Ready for integration with alert systems
+**Task 2: Activity Trigger (Priority 1, 2048 bytes stack)**
+- Waits on EventGroup bit
+- Triggers alert output (buzzer, BLE notification, etc.)
 
-## Serial Debug Output
+## Future Work
 
-The system outputs debug information every 200ms:
-
-```
->STAGE 1: FREEFALL DETECTED
->STAGE 2: IMPACT DETECTED
->STAGE 3: POST-IMPACT STILLNESS - checking for 2-3sec...
->*** STAGE 4: FALL CONFIRMED ***
->Orientation change: 1.234
->Accel variance: 0.456
->>>> ALERTING - FALL DETECTED! <<<<
-```
-
-## Future Enhancements
-
-- [ ] Add MQTT/BLE connectivity for remote alerting
-- [ ] Machine learning-based activity classification
-- [ ] Low-power sleep modes with motion wake
-- [ ] Cloud data logging for statistical analysis
-- [ ] Integration with medical alert systems
-- [ ] Battery monitoring and alerts
+- BMI160 sensor swap (lower noise, lower power consumption)
+- BLE WiFi provisioning for wireless data streaming to Grafana
+- MQTT or HTTP POST for wireless InfluxDB writes
+- Low-power sleep with motion wake interrupt
+- Buzzer and alert hardware integration
+- Enclosure design for waist/belt clip wearable form factor
+- Machine learning activity classifier to reduce false positives
 
 ## Troubleshooting
 
-See [docs/ERRORS_AND_FIXES.md](docs/ERRORS_AND_FIXES.md) for common issues and solutions.
+See [docs/ERRORS_AND_FIXES.md](docs/ERRORS_AND_FIXES.md) for documented issues and fixes.
 
 ## Dependencies
 
-- **espressif32**: ESP32 platform for Arduino
-- **MPU6050**: 6-axis motion sensor library (v1.4.4+)
-- **FreeRTOS**: Real-time kernel (included with Arduino ESP32)
-- **Wire (I2C)**: Built-in Arduino I2C library
+- espressif32: ESP32 platform for PlatformIO
+- electroniccats/MPU6050: IMU sensor library
+- FreeRTOS: Included with Arduino ESP32 core
+- Wire: Built-in Arduino I2C library
 
-## License
-
-[Specify your license here - e.g., MIT, Apache 2.0, etc.]
-
-## Author & Contact
+## Author
 
 Smart Ayodele
 ayosmart129@gmail.com
-
-## References
-
-- [MPU6050 Datasheet](https://invensense.tdk.com/wp-content/uploads/2015/02/MPU-6000-Datasheet1.pdf)
-- [ESP32 Documentation](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/)
-- [FreeRTOS EventGroups](https://www.freertos.org/event-groups-API.html)
-- [PlatformIO Docs](https://docs.platformio.org/)
