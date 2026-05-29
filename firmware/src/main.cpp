@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <MPU6050.h>
+#include "inference.h"
 
 #define SDA_PIN 21
 #define SCL_PIN 22
@@ -86,6 +87,16 @@ void setup() {
 
   mpu.setFullScaleAccelRange(MPU6050_ACCEL_FS_2);
   mpu.setFullScaleGyroRange(MPU6050_GYRO_FS_500);
+
+  // Initialize TFLite Micro inference engine
+  Serial.println("\n=== Initializing Neural Network ===");
+  if (!initializeInference()) {
+    Serial.println("ERROR: Failed to initialize inference engine!");
+    // Continue anyway - fall back to rule-based detection
+  } else {
+    Serial.println("Neural network initialized successfully!");
+  }
+  Serial.println("====================================\n");
 
   // Create RTOS tasks
   xTaskCreate(
@@ -187,9 +198,16 @@ void updateGravityVector(float x, float y, float z) {
   gravityZ = gravityZ * (1.0 - GRAVITY_FILTER_ALPHA) + z * GRAVITY_FILTER_ALPHA;
 }
 
+// Single feature for the 1x512x1 CNN input. x_train_3 values are ~[-2.7, 1.9] (float32).
+// Must match offline preprocessing; default is vertical accel in g (not m/s²).
+static float featureForInference(const SensorData& s) {
+  return s.accelY / 9.81f;
+}
+
 // Task 1: Fall Detection Logic
 void fallDetectionTask(void *pvParameters) {
   SensorData sensorData;
+  InferenceOutput inferenceOutput;
   
   while (1) {
     // Read sensor data
@@ -208,13 +226,20 @@ void fallDetectionTask(void *pvParameters) {
     sensorData.gyroMag = magnitude(sensorData.gyroX, sensorData.gyroY, sensorData.gyroZ);
     sensorData.timestamp = millis();
     
+    pushInferenceSample(featureForInference(sensorData));
+
+    bool inferenceValid = false;
+    if (inferenceWindowReady() && runInference(inferenceOutput)) {
+      inferenceValid = true;
+    }
+    
     // Fall detection state machine
     switch(fallState) {
       case STATE_NORMAL:
         // Stage 1: Continuously update gravity reference during normal state
         updateGravityVector(sensorData.accelX, sensorData.accelY, sensorData.accelZ);
         
-        // Monitor for freefall onset
+        // Monitor for freefall onset (rule-based + optional NN confirmation)
         if (sensorData.accelMag < FREEFALL_THRESHOLD) {
           fallState = STATE_FREEFALL;
           freefallStartTime = millis();
@@ -251,25 +276,35 @@ void fallDetectionTask(void *pvParameters) {
         break;
 
       case STATE_POST_IMPACT_STILLNESS: {
-        // Stage 3 continued: Confirm stillness + orientation change
+        // Stage 3 continued: Confirm stillness + orientation change + NN confidence
         float accelVariance = getAccelVariance(sensorData.accelMag);
         float orientationChange = getOrientationChange(sensorData.accelX, sensorData.accelY, sensorData.accelZ);
         
         unsigned long timeSinceImpact = millis() - postImpactStartTime;
         
-        // Check conditions: low gyro activity, low variance, orientation changed
-        if (timeSinceImpact >= POST_IMPACT_STILLNESS_DURATION && 
-            sensorData.gyroMag < GYRO_STILLNESS_THRESHOLD && 
-            accelVariance < 1.0 &&
-            orientationChange > ORIENTATION_CHANGE_THRESHOLD) {
+        // Determine if this is a fall based on:
+        // 1. Rule-based checks: stillness, variance, orientation
+        // 2. Optional NN confidence if inference is valid
+        bool ruleBasedFall = (timeSinceImpact >= POST_IMPACT_STILLNESS_DURATION && 
+                              sensorData.gyroMag < GYRO_STILLNESS_THRESHOLD && 
+                              accelVariance < 1.0 &&
+                              orientationChange > ORIENTATION_CHANGE_THRESHOLD);
+        
+        // Matches train_qat.py threshold: fall if int8 output > 0 (~ prob >= 0.5)
+        bool nnConfirmedFall =
+            inferenceValid && inferenceOutput.predictedClass == 1;
+
+        if (ruleBasedFall && (!inferenceValid || nnConfirmedFall)) {
           
           fallState = STATE_FALL_CONFIRMED;
           xEventGroupSetBits(eventGroup, FALL_DETECTED_BIT);
           Serial.println("*** STAGE 4: FALL CONFIRMED ***");
-          Serial.print("Orientation change: ");
+          Serial.print("Rule-based: ");
+          Serial.print(ruleBasedFall ? "YES" : "NO");
+          Serial.print(" | NN Confidence: ");
+          Serial.print(inferenceOutput.fallProbability, 3);
+          Serial.print(" | Orientation: ");
           Serial.println(orientationChange, 3);
-          Serial.print("Accel variance: ");
-          Serial.println(accelVariance, 3);
         }
         // Timeout if stillness doesn't hold (false alarm)
         else if (timeSinceImpact > 5000) {
@@ -280,7 +315,7 @@ void fallDetectionTask(void *pvParameters) {
       }
 
       case STATE_FALL_CONFIRMED:
-      Serial.printf("FALL,%lu\n", millis()); // add this line to signal fall event to Python bridge
+        Serial.printf("FALL,%lu\n", millis()); // add this line to signal fall event to Python bridge
         // Signal activity trigger task
         xEventGroupSetBits(eventGroup, ACTIVITY_TRIGGERED_BIT);
         fallState = STATE_NORMAL;  // Reset to normal state

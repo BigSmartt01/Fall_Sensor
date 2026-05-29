@@ -3,3 +3,8 @@ influxdb-client
 pyqtgraph
 PyQt6
 numpy
+joblib
+pandas
+scikit-learn
+tensorflow
+tensorflow-model-optimization
