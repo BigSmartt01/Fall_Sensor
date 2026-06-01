@@ -2,227 +2,265 @@
 
 ## Overview
 
-Fall Sensor is an intelligent fall detection system built on the ESP32-S3 microcontroller using the MPU6050 6-axis motion sensor (accelerometer + gyroscope). The system uses a state machine algorithm to reliably detect human falls through multi-stage analysis, distinguishing true fall events from everyday motion and false alarms.
+Fall Sensor is an intelligent fall detection system built on the ESP32 NodeMCU (final target: ESP32-C3 Super Mini) using the MPU6050 6-axis motion sensor. The system combines a rule-based state machine with a trained CNN neural network for high-confidence fall detection, targeting elderly users with waist/lower-back placement.
 
-Intended for elderly users, the device is designed for waist or lower-back placement to capture the body's center of mass during a fall - the most reliable position for distinguishing genuine falls from normal activity.
+The dual-layer approach uses the state machine as a fast pre-filter and the ML model as a confirmation layer, minimizing both false positives and false negatives.
 
 ## Features
 
-- Real-time fall detection processing accelerometer and gyroscope data at 50Hz
-- Multi-stage 4-state verification combining freefall, impact, stillness, and orientation analysis
-- FreeRTOS task-based architecture with two concurrent tasks for sensor processing and alerting
+- Real-time fall detection at 50Hz via 4-stage state machine
+- CNN-based ML confirmation layer (94.78% accuracy, 97.63% fall recall)
+- Dual confirmation: fall only confirmed when both state machine and ML agree
+- FreeRTOS task-based architecture with three concurrent tasks
 - Thread-safe state sharing via FreeRTOS EventGroups
-- Adaptive gravity baseline using continuous low-pass filtering for accurate orientation reference
-- Live data dashboard with PyQtGraph for real-time waveform monitoring during testing
-- Simultaneous InfluxDB logging with Grafana for post-event analysis and threshold tuning
-- Docker-based visualization stack for portable, reproducible setup
+- Adaptive gravity baseline using continuous low-pass filtering
+- Live PyQtGraph dashboard with real-time waveform monitoring
+- InfluxDB + Grafana logging via Docker for post-event analysis
+- Quantization-aware trained int8 TFLite model (16.9KB flash, 47.1KB RAM)
 
 ## Hardware
 
-- Microcontroller: ESP32-S3
-- IMU Sensor: MPU6050 (6-axis, I2C address 0x68)
-- Interface: I2C
-- SDA: Pin 16, SCL: Pin 17
-- Planned hardware upgrade: BMI160 (lower noise, lower power, better suited for wearable use)
-- Enclosure: TBD (perfboard build in progress, components on order)
+- Current dev board: ESP32 NodeMCU
+- Final target: ESP32-C3 Super Mini (low power, portable)
+- IMU: MPU6050 (current) - switching to BMI160 on AliExpress delivery
+- Interface: I2C - SDA: Pin 16, SCL: Pin 17
+- I2C address: 0x68
+- AliExpress batch order placed May 2026
 
 ## Project Structure
 
 ```
 Fall_Sensor/
-├── firmware/           # ESP32-S3 / MPU6050 PlatformIO project
-├── docs/               # Documentation, notes, diagrams
+├── firmware/               # ESP32 PlatformIO project
+│   ├── src/
+│   │   └── main.cpp        # State machine + ML inference firmware
+│   └── include/
+│       └── fall_model.h    # Auto-generated TFLite model header
+├── docs/
 │   └── ERRORS_AND_FIXES.md
-├── hardware/           # Schematics, PCB, BOM
-├── visualization/      # All data visualization and monitoring tools
-│   ├── bridge.py       # Serial to InfluxDB bridge script
-│   ├── dashboard.py    # PyQtGraph real-time dashboard
-│   ├── docker-compose.yml
-│   ├── influxdb/       # InfluxDB configs
-│   ├── grafana/        # Grafana dashboard exports
-│   └── dashboards/     # Custom dashboard definitions
-├── tests/              # Experimental scripts, prototypes
-├── requirements.txt    # Python dependencies
+├── hardware/               # Schematics, BOM
+├── visualization/
+│   ├── bridge.py           # Serial to InfluxDB bridge
+│   ├── dashboard.py        # PyQtGraph real-time dashboard
+│   └── docker-compose.yml  # InfluxDB + Grafana stack
+├── tests/
+│   ├── three_classes/      # ML training pipeline
+│   │   ├── inspect_dataset.py
+│   │   ├── train_cnn.py
+│   │   ├── train_qat.py
+│   │   ├── quantize_model.py
+│   │   ├── check_model.py
+│   │   ├── convert_to_header.py
+│   │   ├── fall_cnn_model.keras
+│   │   ├── fall_cnn_model.tflite
+│   │   └── fall_cnn_qat_int8.tflite
+│   ├── edge_impulse_data/      # Full windowed dataset (2.41GB)
+│   ├── edge_impulse_data_v2/   # Renamed files with subject ID (2.41GB)
+│   └── edge_impulse_sample_v3/ # Balanced SE-weighted sample (550MB)
+├── requirements.txt
 ├── .gitignore
 └── README.md
 ```
 
-## Python Dependencies
+## ML Pipeline
 
-Install all visualization dependencies:
+### Dataset
+
+SisFall dataset - 4,505 files covering 19 ADL types and 15 fall types from 38 subjects (23 adults SA, 15 elderly SE aged 60-75). Sensor: MMA8451Q accelerometer (columns 7-9) + ITG3200 gyroscope (columns 4-6) at 200Hz.
+
+Download: https://www.kaggle.com/datasets/miguelcleon/sisfall
+
+### Data Preparation
 
 ```bash
-pip install -r requirements.txt
+python tests/prepare_dataset.py    # window and convert to CSV
+python tests/sample_dataset.py     # balance SE/SA ratio
 ```
 
-Contents of `requirements.txt`:
+- Window size: 200 samples (1 second at 200Hz)
+- Step size: 100 samples (50% overlap)
+- Output: 153,705 windows (52,019 fall, 101,686 ADL)
+- Final balanced sample: 17,124 fall + 17,124 ADL (SE-weighted, 30% SA)
+
+### Model Architecture
+
+Lightweight 1D CNN trained with quantization-aware training from the start:
+
 ```
-pyserial
-influxdb-client
-pyqtgraph
-PyQt6
-numpy
+Input (512, 1)
+Conv1D(8, kernel=5) + BatchNorm + MaxPool(4)
+Conv1D(16, kernel=3) + BatchNorm + MaxPool(4)
+Conv1D(32, kernel=3) + BatchNorm + MaxPool(4)
+Flatten
+Dense(16) + Dropout(0.3)
+Output sigmoid
 ```
 
-## Visualization Stack
+Total parameters: ~15,000 (vs 540,000 in the full model)
 
-### Real-Time Dashboard (PyQtGraph)
+### Training
 
-The primary tool for active fall simulation testing. Runs over USB serial and provides serial-plotter-speed waveform updates with fall event markers.
+```bash
+cd tests/three_classes
+python train_qat.py
+```
+
+- Step 1: Train base model (20 epochs, early stopping)
+- Step 2: Apply QAT fine-tuning (10 epochs, lower LR)
+- Step 3: Convert to int8 TFLite
+- Step 4: Verify accuracy and RAM usage
+
+### Model Performance
+
+| Metric | Value |
+|---|---|
+| Overall accuracy | 94.78% |
+| Fall recall | 97.63% |
+| ADL recall | 94.72% |
+| Flash size | 16.9 KB |
+| Inference RAM | 47.1 KB |
+| ESP32-C3 flash limit | 4096 KB |
+| ESP32-C3 RAM limit | 320 KB |
+
+### Generating the C Header
+
+```bash
+python tests/three_classes/convert_to_header.py
+```
+
+Outputs `firmware/include/fall_model.h` - the model embedded as a uint8_t array.
+
+## How It Works
+
+### Dual-Layer Detection
+
+```
+Sensor (50Hz)
+     |
+     v
+State Machine (fast, rule-based)
+     |
+     |-- No freefall --> continue
+     |
+     v
+State: POST_IMPACT_STILLNESS confirmed
+     |
+     v
+ML Inference (CNN, runs every 2 seconds)
+     |
+     |-- ML says NO --> discard (false alarm)
+     |-- ML says YES --> FALL CONFIRMED
+     |
+     v
+Alert triggered
+```
+
+### State Machine Stages
+
+**Stage 1: Freefall** - accel magnitude drops below 3.0 m/s², timeout 400ms
+
+**Stage 2: Impact** - accel magnitude exceeds 20.0 m/s² within 500ms of freefall
+
+**Stage 3: Post-impact stillness** - gyro below 25 deg/s, accel variance below 1.0, sustained 2.5 seconds
+
+**Stage 4: Orientation verification** - orientation change vs pre-fall baseline exceeds 0.5 m/s²
+
+### Gravity Vector
+
+Continuously updated during STATE_NORMAL using low-pass filter (alpha=0.05):
+```
+gravity = gravity x (1 - alpha) + current_accel x alpha
+```
+
+### ML Inference
+
+Runs as a separate FreeRTOS task (priority 1) every 2 seconds on a 512-sample sliding window of accel magnitude. Input quantized float32 to int8 using model scale/zero_point. Output probability threshold: 0.5.
+
+## Serial Output Format
+
+```
+DATA,<timestamp_ms>,<accelMag>,<gyroMag>,<state>
+FALL,<timestamp_ms>
+ML: prob=<value> fall=<YES|NO>
+```
+
+State values: 0=NORMAL, 1=FREEFALL, 2=IMPACT, 3=POST-IMPACT STILLNESS, 4=FALL CONFIRMED
+
+## Visualization
+
+### Real-Time Dashboard
 
 ```bash
 cd visualization
 python dashboard.py
 ```
 
-Features:
-- Scrolling accel and gyro magnitude waveforms updated every 20ms
-- Dashed threshold lines for freefall (3.0), impact (20.0), and stillness (25.0)
-- State machine card with color coding per stage
-- Red vertical marker injected at the exact sample where a fall was confirmed
-- Marker scrolls with the waveform and is removed cleanly when it leaves the screen
-- Pause/Resume button to freeze the graph and inspect fall events without losing live data
-- Simultaneous InfluxDB write in the background
+Close VS Code serial monitor first. Updates every 20ms. Pause/Resume button for fall event inspection.
 
-### InfluxDB + Grafana (Docker)
-
-Used for post-event analysis, long-term logging, and threshold tuning from stored data.
+### InfluxDB + Grafana
 
 ```bash
 cd visualization
 docker compose up -d
 ```
 
-- InfluxDB UI: http://localhost:8086
+- InfluxDB: http://localhost:8086
 - Grafana: http://localhost:3000
-- Bucket: `fallsensor`
-- Org: `smartlab`
+- Bucket: fallsensor, Org: smartlab
 
-### Serial Output Format
+### Python Bridge (serial to InfluxDB)
 
-The firmware outputs a consistent CSV-style format parseable by both the bridge and dashboard:
-
-```
-DATA,<timestamp_ms>,<accelMag>,<gyroMag>,<state>
-FALL,<timestamp_ms>
+```bash
+python visualization/bridge.py
 ```
 
-Example:
-```
-DATA,27496,9.95,26.69,0
-DATA,28816,4.31,505.80,1
-FALL,31522
-```
-
-State values: 0=NORMAL, 1=FREEFALL, 2=IMPACT, 3=POST-IMPACT STILLNESS, 4=FALL CONFIRMED
-
-## Building and Uploading Firmware
-
-### Prerequisites
-
-- PlatformIO (VS Code extension or CLI)
-- USB cable
-
-### Build
+## Building Firmware
 
 ```bash
 platformio run --environment esp32-s3-devkitc-1
-```
-
-### Upload
-
-```bash
 platformio run --target upload --environment esp32-s3-devkitc-1
-```
-
-### Monitor Serial
-
-```bash
 platformio device monitor --baud 115200
 ```
 
-Note: close serial monitor before running dashboard.py or bridge.py - only one process can hold the COM port at a time.
+Note: close serial monitor before running dashboard.py or bridge.py.
 
-## Fall Detection Algorithm
+## Python Dependencies
 
-The system uses a 4-stage state machine:
-
-**Stage 1: Freefall Detection (STATE_FREEFALL)**
-- Accel magnitude drops below 3.0 m/s²
-- Timeout: 400ms (real human freefall lasts 150-400ms)
-- Gravity vector continuously maintained via low-pass filter during STATE_NORMAL
-
-**Stage 2: Impact Detection (STATE_IMPACT)**
-- Accel magnitude exceeds 20.0 m/s²
-- Window: 500ms after freefall
-
-**Stage 3: Post-Impact Stillness (STATE_POST_IMPACT_STILLNESS)**
-- Gyro magnitude below 25.0 deg/s
-- Accel variance below 1.0
-- Sustained for 2.5 seconds minimum
-
-**Stage 4: Orientation Verification (STATE_FALL_CONFIRMED)**
-- Orientation change vs pre-fall gravity baseline exceeds 0.5 m/s²
-- Confirms body position has changed, not a stumble or recovery
-
-### Gravity Vector Management
-
-A low-pass filter continuously tracks the resting orientation during normal state:
-
-```
-gravity = gravity x (1 - alpha) + current_accel x alpha
-alpha = 0.05
+```bash
+pip install -r requirements.txt
 ```
 
-This ensures the orientation baseline is always current before any fall begins.
-
-## Threshold Tuning
-
-Edit in `firmware/src/main.cpp`:
-
-```cpp
-const float FREEFALL_THRESHOLD = 3.0;
-const float IMPACT_THRESHOLD = 20.0;
-const float GYRO_STILLNESS_THRESHOLD = 25.0;
-const float ORIENTATION_CHANGE_THRESHOLD = 0.5;
-const unsigned long FREEFALL_TIMEOUT = 400;
-const unsigned long IMPACT_WINDOW = 500;
-const unsigned long POST_IMPACT_STILLNESS_DURATION = 2500;
 ```
-
-Use the PyQtGraph dashboard during physical testing to observe threshold crossings in real time, then use Grafana to review stored data from each session.
-
-## RTOS Task Structure
-
-**Task 1: Fall Detection (Priority 2, 4096 bytes stack)**
-- Reads MPU6050 via I2C at 50Hz
-- Runs state machine logic
-- Signals fall confirmation via FreeRTOS EventGroup
-
-**Task 2: Activity Trigger (Priority 1, 2048 bytes stack)**
-- Waits on EventGroup bit
-- Triggers alert output (buzzer, BLE notification, etc.)
+pyserial
+influxdb-client
+pyqtgraph
+PyQt6
+numpy
+tensorflow
+tensorflow-model-optimization
+scikit-learn
+```
 
 ## Future Work
 
-- BMI160 sensor swap (lower noise, lower power consumption)
-- BLE WiFi provisioning for wireless data streaming to Grafana
-- MQTT or HTTP POST for wireless InfluxDB writes
-- Low-power sleep with motion wake interrupt
+- BMI160 sensor swap on hardware delivery
+- Retrain CNN on BMI160-equivalent sensor axes from SisFall
+- BLE WiFi provisioning for wireless Grafana streaming
+- HTTP POST to InfluxDB over WiFi
 - Buzzer and alert hardware integration
-- Enclosure design for waist/belt clip wearable form factor
-- Machine learning activity classifier to reduce false positives
+- Enclosure: waist/belt-clip form factor, 3D printed
+- Collect real elderly fall simulation data for fine-tuning
 
 ## Troubleshooting
 
-See [docs/ERRORS_AND_FIXES.md](docs/ERRORS_AND_FIXES.md) for documented issues and fixes.
+See docs/ERRORS_AND_FIXES.md
 
 ## Dependencies
 
-- espressif32: ESP32 platform for PlatformIO
-- electroniccats/MPU6050: IMU sensor library
-- FreeRTOS: Included with Arduino ESP32 core
-- Wire: Built-in Arduino I2C library
+- espressif32: ESP32 platform
+- electroniccats/MPU6050: IMU library
+- TFLite Micro: tensorflow/lite/micro (ESP-IDF component)
+- FreeRTOS: included with Arduino ESP32 core
 
 ## Author
 

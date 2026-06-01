@@ -192,7 +192,7 @@ TROUBLESHOOTING:
   • If noisy predictions: Increase input_scale (less resolution)
   • If flat predictions: Decrease input_scale (more resolution)
 
-For more details, see QUANTIZATION_CALIBRATION.md
+For more details, see docs/QUANTIZATION_CALIBRATION.md
 {'='*60}
 """
     
