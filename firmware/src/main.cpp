@@ -233,19 +233,28 @@ void fallDetectionTask(void *pvParameters) {
                               accelVariance < 1.0f &&
                               orientationChange > ORIENTATION_CHANGE_THRESHOLD);
 
-        // NN confirms fall if predictedClass == 1
-        // If inference not ready, fall back to rule-based alone
+        // NN confirms fall if predictedClass == 1.
+        // If inference is not ready, fall back to rule-based alone.
         bool nnConfirmedFall = inferenceValid && (inferenceOutput.predictedClass == 1);
 
         if (ruleBasedFall && (!inferenceValid || nnConfirmedFall)) {
           fallState = STATE_FALL_CONFIRMED;
           xEventGroupSetBits(eventGroup, FALL_DETECTED_BIT);
           Serial.println("*** STAGE 4: FALL CONFIRMED ***");
-          Serial.printf("Rule-based: YES | NN: %s | Prob: %.3f | Orient: %.3f\n",
-            nnConfirmedFall ? "YES" : "NOT READY",
-            inferenceOutput.fallProbability,
-            orientationChange
-          );
+          const char* nnStatus = !inferenceValid ? "NOT_READY" :
+                                 (nnConfirmedFall ? "YES" : "NO");
+          if (inferenceValid) {
+            Serial.printf("Rule-based: YES | NN: %s | Prob: %.3f | Orient: %.3f\n",
+              nnStatus,
+              inferenceOutput.fallProbability,
+              orientationChange
+            );
+          } else {
+            Serial.printf("Rule-based: YES | NN: %s | Prob: N/A | Orient: %.3f\n",
+              nnStatus,
+              orientationChange
+            );
+          }
         } else if (timeSinceImpact > 5000) {
           fallState = STATE_NORMAL;
           Serial.println("Post-impact stillness timeout - false alarm");
