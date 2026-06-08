@@ -1,18 +1,23 @@
 #include <Arduino.h>
 #include <Wire.h>
-#include <MPU6050.h>
+#include <DFRobot_BMI160.h>
 #include "inference.h"
 
 // Pin definitions
-// NodeMCU dev module (current)
-#define SDA_PIN 21
-#define SCL_PIN 22
+// NodeMCU dev module (Previous test module)
+//#define SDA_PIN 21
+//#define SCL_PIN 22
 
-// ESP32-C3 Super Mini (final target - uncomment on hardware arrival)
-//#define SDA_PIN 6
-//#define SCL_PIN 7
+// ESP32-C3 Super Mini (current)
+#define SDA_PIN     8
+#define SCL_PIN     9
+#define INT1_PIN    5
+#define INT2_PIN    6
+#define BUZZER_PIN  2
 
-MPU6050 mpu;
+//const int8_t BMI160_I2C_ADDR = 0x68;  // SDIO pin connected to GND
+
+DFRobot_BMI160 bmi160;
 
 // ─── FREERTOS ─────────────────────────────────────────────────────────────────
 EventGroupHandle_t eventGroup = NULL;
@@ -62,6 +67,7 @@ void fallDetectionTask(void *pvParameters);
 void activityTriggerTask(void *pvParameters);
 
 // ─── CONVERSION HELPERS ───────────────────────────────────────────────────────
+// BMI160 accel at ±2g: 16384 LSB/g
 float accelRawToG(int16_t raw, int range) {
   float scale;
   switch (range) {
@@ -78,6 +84,7 @@ float accelRawToMS2(int16_t raw, int range) {
   return accelRawToG(raw, range) * 9.81;
 }
 
+// BMI160 gyro at ±2000 deg/s: 16.4 LSB/deg/s
 float gyroRawToDPS(int16_t raw, int range) {
   float scale;
   switch (range) {
@@ -85,7 +92,7 @@ float gyroRawToDPS(int16_t raw, int range) {
     case 500:  scale = 65.5;  break;
     case 1000: scale = 32.8;  break;
     case 2000: scale = 16.4;  break;
-    default:   scale = 131.0; break;
+    default:   scale = 16.4; break;
   }
   return (float)raw / scale;
 }
@@ -128,21 +135,30 @@ void setup() {
   delay(500);
   Wire.begin(SDA_PIN, SCL_PIN);
 
+  pinMode(BUZZER_PIN, OUTPUT);
+
   eventGroup = xEventGroupCreate();
   if (eventGroup == NULL) {
     Serial.println("Failed to create event group!");
     return;
   }
 
-  Serial.println("Initializing MPU6050...");
-  mpu.initialize();
-  if (!mpu.testConnection()) {
-    Serial.println("MPU6050 testConnection() failed - continuing, verify from data");
-  } else {
-    Serial.println("MPU6050 connection successful!");
+  Serial.println("Initializing BMI160...");
+  
+  if (bmi160.softReset() != BMI160_OK) {
+    Serial.println("BMI160 reset failed!");
+    while (1);
   }
-  mpu.setFullScaleAccelRange(MPU6050_ACCEL_FS_2);
-  mpu.setFullScaleGyroRange(MPU6050_GYRO_FS_500);
+
+  if (bmi160.I2cInit(BMI160_I2C_ADDR) != BMI160_OK) {
+    Serial.println("BMI160 init failed!");
+    while (1);
+  }
+
+  Serial.println("BMI160 Ready");
+
+  // DFRobot library uses begin() for range configuration
+  // Default ranges after I2cInit: accel ±2g, gyro ±2000 deg/s
 
   Serial.println("\n=== Initializing Neural Network ===");
   if (!initializeInference()) {
@@ -165,15 +181,21 @@ void fallDetectionTask(void *pvParameters) {
   InferenceOutput inferenceOutput;
 
   while (1) {
-    int16_t ax, ay, az, gx, gy, gz;
-    mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
-
-    sensorData.accelX    = accelRawToMS2(ax, 2);
-    sensorData.accelY    = accelRawToMS2(ay, 2);
-    sensorData.accelZ    = accelRawToMS2(az, 2);
-    sensorData.gyroX     = gyroRawToDPS(gx, 500);
-    sensorData.gyroY     = gyroRawToDPS(gy, 500);
-    sensorData.gyroZ     = gyroRawToDPS(gz, 500);
+    // DFRobot_BMI160: getAccelGyroData returns array of 6 int16_t
+    // Index order: [0]=gyroX [1]=gyroY [2]=gyroZ [3]=accelX [4]=accelY [5]=accelZ
+    int16_t accelGyro[6] = {0};
+    bmi160.getAccelGyroData(accelGyro);
+ 
+    // Gyro: indices 0-2
+    sensorData.gyroX  = gyroRawToDPS(accelGyro[0], 2000);
+    sensorData.gyroY  = gyroRawToDPS(accelGyro[1], 2000);
+    sensorData.gyroZ  = gyroRawToDPS(accelGyro[2], 2000);
+ 
+    // Accel: indices 3-5
+    sensorData.accelX = accelRawToMS2(accelGyro[3], 2);
+    sensorData.accelY = accelRawToMS2(accelGyro[4], 2);
+    sensorData.accelZ = accelRawToMS2(accelGyro[5], 2);
+ 
     sensorData.accelMag  = magnitude(sensorData.accelX, sensorData.accelY, sensorData.accelZ);
     sensorData.gyroMag   = magnitude(sensorData.gyroX,  sensorData.gyroY,  sensorData.gyroZ);
     sensorData.timestamp = millis();
@@ -298,7 +320,9 @@ void activityTriggerTask(void *pvParameters) {
     );
     if ((uxBits & ACTIVITY_TRIGGERED_BIT) != 0) {
       Serial.println(">>>> ALERTING - FALL DETECTED! <<<<");
-      // TODO: buzzer, BLE notification, HTTP alert
+      digitalWrite(BUZZER_PIN, HIGH);
+      vTaskDelay(2000 / portTICK_PERIOD_MS);
+      digitalWrite(BUZZER_PIN, LOW);
     }
   }
 }

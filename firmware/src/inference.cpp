@@ -33,7 +33,7 @@ int   window_write_index = 0;
 int quantizeFloatToInt8(float value, float scale, int32_t zero_point) {
   if (scale == 0.0f) return 0;
   int32_t q = static_cast<int32_t>(lroundf(value / scale) + zero_point);
-  return std::max(-128, std::min(127, q));
+  return std::max<int32_t>(-128, std::min<int32_t>(127, q));
 }
 
 float dequantizeInt8ToFloat(int8_t value, float scale, int32_t zero_point) {
