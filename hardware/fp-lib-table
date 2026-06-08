@@ -1,0 +1,5 @@
+(fp_lib_table
+  (version 7)
+  (lib (name "footprint")(type "KiCad")(uri "${KIPRJMOD}/libraries/footprint")(options "")(descr ""))
+  (lib (name "Alaafia_Footprint")(type "KiCad")(uri "${KIPRJMOD}/libraries/footprint/Alaafia_Footprint.pretty")(options "")(descr ""))
+)

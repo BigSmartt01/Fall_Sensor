@@ -1,0 +1,5 @@
+(sym_lib_table
+  (version 7)
+  (lib (name "ESP32-C3_SUPERMINI_TH")(type "KiCad")(uri "${KIPRJMOD}/libraries/symbol/ESP32-C3_SUPERMINI_TH.kicad_sym")(options "")(descr ""))
+  (lib (name "Alaafia_Fall_PCB")(type "KiCad")(uri "${KIPRJMOD}/libraries/symbol/Alaafia_Fall_PCB.kicad_sym")(options "")(descr ""))
+)
