@@ -26,6 +26,27 @@ Thumbs.db
 .pio/.cache/
 .pio/.lock
 
+# IDF build output
+/build/
+/cmake-build-*/
+
+# PlatformIO (if you still use it alongside IDF)
+/.pio/
+
+# VSCode settings
+.vscode/
+
+# Python virtual environments
+venv/
+venv_compat/
+*.pyc
+__pycache__/
+
+# Logs and temp files
+*.log
+*.tmp
+
+
 # =========================
 # IDE / Editor
 # =========================
