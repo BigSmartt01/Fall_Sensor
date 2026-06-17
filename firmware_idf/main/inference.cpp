@@ -54,16 +54,15 @@ bool initializeInference() {
 
   // AllOpsResolver includes all ops - fine for dev
   // Switch to MicroMutableOpResolver later to save flash
-  static tflite::MicroMutableOpResolver<9> resolver;
-  resolver.AddConv2D();
-  resolver.AddDepthwiseConv2D();
-  resolver.AddFullyConnected();
-  resolver.AddMaxPool2D();
-  resolver.AddReshape();
-  resolver.AddSoftmax();
-  resolver.AddQuantize();
-  resolver.AddDequantize();
-  resolver.AddExpandDims();
+static tflite::MicroMutableOpResolver<8> resolver;
+resolver.AddAdd();
+resolver.AddConv2D();
+resolver.AddExpandDims();
+resolver.AddFullyConnected();
+resolver.AddLogistic();
+resolver.AddMaxPool2D();
+resolver.AddMul();
+resolver.AddReshape();
 
 // Construct interpreter with arguments
 static tflite::MicroInterpreter static_interpreter(

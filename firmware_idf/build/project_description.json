@@ -1,7 +1,7 @@
 {
     "version":            "1.2",
     "project_name":       "fall_sensor",
-    "project_version":    "f8a0701",
+    "project_version":    "09e0b7f-dirty",
     "project_path":       "C:/Users/user/Documents/Projects/Fall_Sensor/firmware_idf",
     "idf_path":           "C:/Espressif/frameworks/esp-idf-v5.5.2",
     "build_dir":          "C:/Users/user/Documents/Projects/Fall_Sensor/firmware_idf/build",

@@ -132,9 +132,12 @@ static float featureForInference(const SensorData& s) {
 // ─── SETUP ────────────────────────────────────────────────────────────────────
 void setup() {
   Serial.begin(115200);
-  delay(500);
-  Wire.begin(SDA_PIN, SCL_PIN);
+  delay(1000);
+
+  //Wire.begin(SDA_PIN, SCL_PIN);
+  Wire.begin(8, 9);  // For ESP32-C3 Super Mini, SDA=8 SCL=9
   Wire.setClock(100000);  // 100 kHz I2C
+  delay(500);  // let bus settle
 
   pinMode(BUZZER_PIN, OUTPUT);
 
