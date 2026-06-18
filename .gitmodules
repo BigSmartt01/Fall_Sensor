@@ -1,0 +1,3 @@
+[submodule "firmware_idf/components/DFRobot_BMI160"]
+	path = firmware_idf/components/DFRobot_BMI160
+	url = https://github.com/DFRobot/DFRobot_BMI160.git
