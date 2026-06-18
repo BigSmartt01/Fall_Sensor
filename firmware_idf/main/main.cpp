@@ -134,6 +134,7 @@ void setup() {
   Serial.begin(115200);
   delay(1000);
 
+  //Wire.end(); // forces a clean re‑init
   //Wire.begin(SDA_PIN, SCL_PIN);
   Wire.begin(8, 9);  // For ESP32-C3 Super Mini, SDA=8 SCL=9
   Wire.setClock(100000);  // 100 kHz I2C
@@ -148,7 +149,21 @@ void setup() {
   }
 
   Serial.println("Initializing BMI160...");
-  
+
+  if (bmi160.I2cInit(BMI160_I2C_ADDR) != BMI160_OK) {
+    Serial.println("BMI160 init failed!");
+    while (1);
+  }
+
+  delay(100);
+
+  if (bmi160.softReset() != BMI160_OK) {
+    Serial.println("BMI160 reset failed!");
+    while (1);
+  }
+
+  /*
+  // BMI Initialization sequence
   if (bmi160.softReset() != BMI160_OK) {
     Serial.println("BMI160 reset failed!");
     while (1);
@@ -158,6 +173,7 @@ void setup() {
     Serial.println("BMI160 init failed!");
     while (1);
   }
+  */
 
   Serial.println("BMI160 Ready");
 
