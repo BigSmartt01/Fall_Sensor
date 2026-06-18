@@ -131,8 +131,11 @@ static float featureForInference(const SensorData& s) {
 
 // ─── SETUP ────────────────────────────────────────────────────────────────────
 void setup() {
+  printf("SETUP STARTED\n");
   Serial.begin(115200);
+  printf("Serial started\n");
   delay(1000);
+  printf("AFTER DELAY\n");
 
   //Wire.end(); // forces a clean re‑init
   //Wire.begin(SDA_PIN, SCL_PIN);

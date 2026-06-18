@@ -5,9 +5,16 @@ void setup();
 void loop();
 
 extern "C" void app_main() {
+    printf("ENTERED APP MAIN\n");
+
     initArduino();
+
+    printf("ARDUINO INIT DONE\n");
+
     setup();
-    // loop() not needed - FreeRTOS tasks handle everything
+
+    printf("SETUP RETURNED\n");
+
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(10));
     }
