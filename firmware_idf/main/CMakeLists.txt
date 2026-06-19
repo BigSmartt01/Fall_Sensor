@@ -1,0 +1,14 @@
+idf_component_register(
+    SRCS
+        "fall_sensor.cpp"
+        "main.cpp"
+        "inference.cpp"
+    INCLUDE_DIRS
+        "."
+    REQUIRES
+        esp-tflite-micro
+        DFRobot_BMI160
+        driver
+        freertos
+        esp_timer
+)
