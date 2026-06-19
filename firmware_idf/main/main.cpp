@@ -1,6 +1,9 @@
 #include <Arduino.h>
 #include <Wire.h>
+
+#undef LITTLE_ENDIAN
 #include <DFRobot_BMI160.h>
+
 #include "inference.h"
 
 // Pin definitions
@@ -131,71 +134,54 @@ static float featureForInference(const SensorData& s) {
 
 // ─── SETUP ────────────────────────────────────────────────────────────────────
 void setup() {
-  printf("SETUP STARTED\n");
   Serial.begin(115200);
-  printf("Serial started\n");
-  delay(1000);
-  printf("AFTER DELAY\n");
+  delay(500);
 
-  //Wire.end(); // forces a clean re‑init
-  //Wire.begin(SDA_PIN, SCL_PIN);
-  Wire.begin(8, 9);  // For ESP32-C3 Super Mini, SDA=8 SCL=9
+  Wire.begin(SDA_PIN, SCL_PIN);
   Wire.setClock(100000);  // 100 kHz I2C
-  delay(500);  // let bus settle
+  delay(500);
 
   pinMode(BUZZER_PIN, OUTPUT);
 
   eventGroup = xEventGroupCreate();
   if (eventGroup == NULL) {
-    Serial.println("Failed to create event group!");
+    printf("Failed to create event group!\n");
     return;
   }
 
-  Serial.println("Initializing BMI160...");
+  printf("Initializing BMI160\n");
 
-  if (bmi160.I2cInit(BMI160_I2C_ADDR) != BMI160_OK) {
-    Serial.println("BMI160 init failed!");
+  if (bmi160.softReset() != BMI160_OK) {
+    printf("BMI160 reset failed!\n");
     while (1);
   }
 
   delay(100);
 
-  if (bmi160.softReset() != BMI160_OK) {
-    Serial.println("BMI160 reset failed!");
-    while (1);
-  }
-
-  /*
-  // BMI Initialization sequence
-  if (bmi160.softReset() != BMI160_OK) {
-    Serial.println("BMI160 reset failed!");
-    while (1);
-  }
-
   if (bmi160.I2cInit(BMI160_I2C_ADDR) != BMI160_OK) {
-    Serial.println("BMI160 init failed!");
-    while (1);
+    printf("BMI160 init failed!\n");
+    while (1) {
+    }
   }
-  */
 
-  Serial.println("BMI160 Ready");
+  printf("BMI160 Ready\n");
 
   // DFRobot library uses begin() for range configuration
   // Default ranges after I2cInit: accel ±2g, gyro ±2000 deg/s
 
-  Serial.println("\n=== Initializing Neural Network ===");
+  printf("\n=== Initializing Neural Network ===\n");
   if (!initializeInference()) {
-    Serial.println("ERROR: Failed to initialize inference engine!");
-    Serial.println("Falling back to rule-based detection only.");
+    printf("ERROR: Failed to initialize inference engine!\n");
+    printf("Falling back to rule-based detection only.\n");
   } else {
-    Serial.println("Neural network initialized successfully!");
+    printf("Neural network initialized successfully!\n");
   }
-  Serial.println("====================================\n");
+  printf("====================================\n");
 
   xTaskCreate(fallDetectionTask,   "Fall Detection",  4096, NULL, 2, &fallDetectionTaskHandle);
   xTaskCreate(activityTriggerTask, "Activity Trigger", 2048, NULL, 1, &activityTriggerTaskHandle);
 
-  Serial.println("RTOS tasks created.");
+  printf("RTOS tasks created.\n");
 }
 
 // ─── TASK 1: FALL DETECTION ───────────────────────────────────────────────────
@@ -239,7 +225,7 @@ void fallDetectionTask(void *pvParameters) {
         if (sensorData.accelMag < FREEFALL_THRESHOLD) {
           fallState = STATE_FREEFALL;
           freefallStartTime = millis();
-          Serial.println("STAGE 1: FREEFALL DETECTED");
+          printf("STAGE 1: FREEFALL DETECTED\n");
         }
         break;
 
@@ -247,10 +233,10 @@ void fallDetectionTask(void *pvParameters) {
         if (sensorData.accelMag > IMPACT_THRESHOLD) {
           fallState = STATE_IMPACT;
           impactStartTime = millis();
-          Serial.println("STAGE 2: IMPACT DETECTED");
+          printf("STAGE 2: IMPACT DETECTED\n");
         } else if (millis() - freefallStartTime > FREEFALL_TIMEOUT) {
           fallState = STATE_NORMAL;
-          Serial.println("Freefall timeout - false alarm");
+          printf("Freefall timeout - false alarm\n");
         }
         break;
 
@@ -258,10 +244,10 @@ void fallDetectionTask(void *pvParameters) {
         if (sensorData.gyroMag < GYRO_STILLNESS_THRESHOLD) {
           fallState = STATE_POST_IMPACT_STILLNESS;
           postImpactStartTime = millis();
-          Serial.println("STAGE 3: POST-IMPACT STILLNESS - checking...");
+          printf("STAGE 3: POST-IMPACT STILLNESS - checking...\n");
         } else if (millis() - impactStartTime > IMPACT_WINDOW) {
           fallState = STATE_NORMAL;
-          Serial.println("Impact timeout - false alarm");
+          printf("Impact timeout - false alarm\n");
         }
         break;
 
@@ -285,30 +271,30 @@ void fallDetectionTask(void *pvParameters) {
         if (ruleBasedFall && (!inferenceValid || nnConfirmedFall)) {
           fallState = STATE_FALL_CONFIRMED;
           xEventGroupSetBits(eventGroup, FALL_DETECTED_BIT);
-          Serial.println("*** STAGE 4: FALL CONFIRMED ***");
+          printf("*** STAGE 4: FALL CONFIRMED ***\n");
           const char* nnStatus = !inferenceValid ? "NOT_READY" :
                                  (nnConfirmedFall ? "YES" : "NO");
           if (inferenceValid) {
-            Serial.printf("Rule-based: YES | NN: %s | Prob: %.3f | Orient: %.3f\n",
+            printf("Rule-based: YES | NN: %s | Prob: %.3f | Orient: %.3f\n",
               nnStatus,
               inferenceOutput.fallProbability,
               orientationChange
             );
           } else {
-            Serial.printf("Rule-based: YES | NN: %s | Prob: N/A | Orient: %.3f\n",
+            printf("Rule-based: YES | NN: %s | Prob: N/A | Orient: %.3f\n",
               nnStatus,
               orientationChange
             );
           }
         } else if (timeSinceImpact > 5000) {
           fallState = STATE_NORMAL;
-          Serial.println("Post-impact stillness timeout - false alarm");
+          printf("Post-impact stillness timeout - false alarm\n");
         }
         break;
       }
 
       case STATE_FALL_CONFIRMED:
-        Serial.printf("FALL,%lu\n", millis());
+        printf("FALL,%lu\n", millis());
         xEventGroupSetBits(eventGroup, ACTIVITY_TRIGGERED_BIT);
         fallState = STATE_NORMAL;
         break;
@@ -318,7 +304,7 @@ void fallDetectionTask(void *pvParameters) {
     static unsigned long lastPrint = 0;
     if (millis() - lastPrint >= 20) {
       lastPrint = millis();
-      Serial.printf("DATA,%lu,%.2f,%.2f,%d\n",
+      printf("DATA,%lu,%.2f,%.2f,%d\n",
         sensorData.timestamp,
         sensorData.accelMag,
         sensorData.gyroMag,
@@ -342,7 +328,7 @@ void activityTriggerTask(void *pvParameters) {
       100 / portTICK_PERIOD_MS
     );
     if ((uxBits & ACTIVITY_TRIGGERED_BIT) != 0) {
-      Serial.println(">>>> ALERTING - FALL DETECTED! <<<<");
+      printf(">>>> ALERTING - FALL DETECTED! <<<<\n");
       digitalWrite(BUZZER_PIN, HIGH);
       vTaskDelay(2000 / portTICK_PERIOD_MS);
       digitalWrite(BUZZER_PIN, LOW);

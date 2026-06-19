@@ -104,11 +104,11 @@ tests/three_classes/y_test_3
 *.npy
 
 # =========================
-# ML Model Files (large)
+# Keep ML Model Files
 # =========================
-tests/three_classes/fall_cnn_model.keras
-tests/three_classes/fall_cnn_model.tflite
-tests/three_classes/fall_cnn_qat_int8.tflite
+!tests/three_classes/fall_cnn_model.keras
+!tests/three_classes/fall_cnn_model.tflite
+!tests/three_classes/fall_cnn_qat_int8.tflite
 
 # Keep the generated C header - it belongs in firmware
 !firmware_idf/main/fall_model.h

@@ -43,88 +43,90 @@ float dequantizeInt8ToFloat(int8_t value, float scale, int32_t zero_point) {
 }  // namespace
 
 bool initializeInference() {
-  Serial.println("Initializing TFLite Micro inference...");
+    printf("Initializing TFLite Micro inference...\n");
 
-  model = tflite::GetModel(fall_model_data);
-  if (model->version() != TFLITE_SCHEMA_VERSION) {
-    Serial.printf("Model schema mismatch: got %lu, expected %lu\n",
-                  (unsigned long)model->version(), (unsigned long)TFLITE_SCHEMA_VERSION);
-    return false;
-  }
+    model = tflite::GetModel(fall_model_data);
 
-  // AllOpsResolver includes all ops - fine for dev
-  // Switch to MicroMutableOpResolver later to save flash
-static tflite::MicroMutableOpResolver<8> resolver;
-resolver.AddAdd();
-resolver.AddConv2D();
-resolver.AddExpandDims();
-resolver.AddFullyConnected();
-resolver.AddLogistic();
-resolver.AddMaxPool2D();
-resolver.AddMul();
-resolver.AddReshape();
+    if (model->version() != TFLITE_SCHEMA_VERSION) {
+      printf("Model schema mismatch: got %lu, expected %lu\n",
+                    (unsigned long)model->version(), (unsigned long)TFLITE_SCHEMA_VERSION);
+      printf("SCHEMA FAIL\n");              
+      return false;
+    }
 
-// Construct interpreter with arguments
-static tflite::MicroInterpreter static_interpreter(
-    model, resolver, tensor_arena, kTensorArenaSize);
+    // AllOpsResolver includes all ops - fine for dev
+    // Switch to MicroMutableOpResolver later to save flash
+    static tflite::MicroMutableOpResolver<8> resolver;
+    resolver.AddAdd();
+    resolver.AddConv2D();
+    resolver.AddExpandDims();
+    resolver.AddFullyConnected();
+    resolver.AddLogistic();
+    resolver.AddMaxPool2D();
+    resolver.AddMul();
+    resolver.AddReshape();
 
-interpreter = &static_interpreter;
+    // Construct interpreter with arguments
+    static tflite::MicroInterpreter static_interpreter(
+          model, resolver, tensor_arena, kTensorArenaSize);
 
-  if (interpreter->AllocateTensors() != kTfLiteOk) {
-    Serial.println("AllocateTensors() failed!");
-    return false;
-  }
+    interpreter = &static_interpreter;
 
-  input_tensor  = interpreter->input(0);
-  output_tensor = interpreter->output(0);
+    if (interpreter->AllocateTensors() != kTfLiteOk) {
+        printf("AllocateTensors() failed!\n");
+        return false;
+    }
 
-  if (input_tensor == nullptr || output_tensor == nullptr) {
-    Serial.println("Failed to get input/output tensors!");
-    return false;
-  }
+    input_tensor  = interpreter->input(0);
+    output_tensor = interpreter->output(0);
 
-  input_scale       = input_tensor->params.scale;
-  input_zero_point  = input_tensor->params.zero_point;
-  output_scale      = output_tensor->params.scale;
-  output_zero_point = output_tensor->params.zero_point;
+    if (input_tensor == nullptr || output_tensor == nullptr) {
+      printf("Failed to get input/output tensors!\n");
+      return false;
+    }
 
-  // Print input shape
-  Serial.print("Input shape: ");
-  int input_elements = 1;
-  for (int i = 0; i < input_tensor->dims->size; i++) {
-    Serial.printf("%d ", input_tensor->dims->data[i]);
-    input_elements *= input_tensor->dims->data[i];
-  }
-  Serial.printf("(%d elements, type %d)\n", input_elements, input_tensor->type);
-  Serial.printf("Input quant:  scale=%.8f  zero_point=%ld\n",
-                input_scale, static_cast<long>(input_zero_point));
+    input_scale       = input_tensor->params.scale;
+    input_zero_point  = input_tensor->params.zero_point;
+    output_scale      = output_tensor->params.scale;
+    output_zero_point = output_tensor->params.zero_point;
 
-  // Print output shape
-  Serial.print("Output shape: ");
-  int output_elements = 1;
-  for (int i = 0; i < output_tensor->dims->size; i++) {
-    Serial.printf("%d ", output_tensor->dims->data[i]);
-    output_elements *= output_tensor->dims->data[i];
-  }
-  Serial.printf("(%d elements, type %d)\n", output_elements, output_tensor->type);
-  Serial.printf("Output quant: scale=%.8f  zero_point=%ld\n",
-                output_scale, static_cast<long>(output_zero_point));
+    // Print input shape
+    printf("Input shape: ");
+    int input_elements = 1;
+    for (int i = 0; i < input_tensor->dims->size; i++) {
+        printf("%d ", input_tensor->dims->data[i]);
+        input_elements *= input_tensor->dims->data[i];
+    }
+    printf("(%d elements, type %d)\n", input_elements, input_tensor->type);
+    printf("Input quant:  scale=%.8f  zero_point=%ld\n",
+                  input_scale, static_cast<long>(input_zero_point));
 
-  // Sanity checks
-  if (input_elements != kInferenceWindowSize) {
-    Serial.printf("WARNING: model expects %d inputs, firmware window is %d\n",
-                  input_elements, kInferenceWindowSize);
-  }
-  if (output_elements != 1) {
-    Serial.printf("WARNING: expected 1 output (sigmoid), got %d\n", output_elements);
-  }
+    // Print output shape
+    printf("Output shape: ");
+    int output_elements = 1;
+    for (int i = 0; i < output_tensor->dims->size; i++) {
+        printf("%d ", output_tensor->dims->data[i]);
+        output_elements *= output_tensor->dims->data[i];
+    }
+    printf("(%d elements, type %d)\n", output_elements, output_tensor->type);
+    printf("Output quant: scale=%.8f  zero_point=%ld\n",
+                  output_scale, static_cast<long>(output_zero_point));
 
-  window_count       = 0;
-  window_write_index = 0;
+    // Sanity checks
+    if (input_elements != kInferenceWindowSize) {
+        printf("WARNING: model expects %d inputs, firmware window is %d\n",
+                      input_elements, kInferenceWindowSize);
+    }
+    if (output_elements != 1) {
+        printf("WARNING: expected 1 output (sigmoid), got %d\n", output_elements);
+    }
 
-  getInferenceMemoryInfo();
-  Serial.println("TFLite Micro initialized successfully.");
-  return true;
+    window_count       = 0;
+    window_write_index = 0;
+
+    getInferenceMemoryInfo();
+    printf("TFLite Micro initialized successfully.\n");
+    return true;
 }
 
 void pushInferenceSample(float feature) {
@@ -146,7 +148,7 @@ bool runInference(InferenceOutput& output) {
   }
 
   if (input_tensor->type != kTfLiteInt8) {
-    Serial.println("runInference: expected int8 input tensor");
+    printf("runInference: expected int8 input tensor\n");
     return false;
   }
 
@@ -160,12 +162,12 @@ bool runInference(InferenceOutput& output) {
   }
 
   if (interpreter->Invoke() != kTfLiteOk) {
-    Serial.println("Invoke() failed!");
+    printf("Invoke() failed!\n");
     return false;
   }
 
   if (output_tensor->type != kTfLiteInt8) {
-    Serial.println("runInference: expected int8 output tensor");
+    printf("runInference: expected int8 output tensor\n");
     return false;
   }
 
@@ -181,18 +183,18 @@ bool runInference(InferenceOutput& output) {
 }
 
 void getInferenceMemoryInfo() {
-  Serial.println("=== Inference Memory ===");
-  Serial.printf("Tensor arena size:  %d bytes\n", kTensorArenaSize);
+  printf("=== Inference Memory ===\n");
+  printf("Tensor arena size:  %d bytes\n", kTensorArenaSize);
   if (interpreter != nullptr) {
     const size_t used = interpreter->arena_used_bytes();
-    Serial.printf("Arena used:         %u bytes (%.1f%%)\n",
+    printf("Arena used:         %u bytes (%.1f%%)\n",
                   static_cast<unsigned>(used),
                   100.0f * used / kTensorArenaSize);
   }
-  Serial.printf("Window:             %d samples (%.2f s at 50 Hz)\n",
+  printf("Window:             %d samples (%.2f s at 50 Hz)\n",
                 kInferenceWindowSize,
                 kInferenceWindowSize / 50.0f);
-  Serial.println("========================");
+  printf("========================\n");
 }
 
 void deinitializeInference() {
