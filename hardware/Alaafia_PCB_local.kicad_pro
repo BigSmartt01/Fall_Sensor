@@ -190,7 +190,8 @@
         0.0,
         0.6,
         0.8,
-        1.0
+        1.0,
+        1.5
       ],
       "tuning_pattern_settings": {
         "diff_pair_defaults": {
@@ -503,7 +504,7 @@
       "gencad": "",
       "idf": "",
       "netlist": "",
-      "plot": "",
+      "plot": "../../../../Downloads/Alaafia_One_Layer/Alaafia_One_Layer/fabrication/",
       "pos_files": "",
       "specctra_dsn": "",
       "step": "",
