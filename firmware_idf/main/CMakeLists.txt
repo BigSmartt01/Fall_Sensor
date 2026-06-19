@@ -7,7 +7,7 @@ idf_component_register(
         "."
     REQUIRES
         esp-tflite-micro
-        DFRobot_BMI160
+        DFRobot_BMI160_wrapper
         driver
         freertos
         esp_timer
