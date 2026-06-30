@@ -3,6 +3,7 @@ idf_component_register(
         "fall_sensor.cpp"
         "main.cpp"
         "inference.cpp"
+        "wifi_stream.cpp"
     INCLUDE_DIRS
         "."
     REQUIRES
@@ -11,4 +12,7 @@ idf_component_register(
         driver
         freertos
         esp_timer
+        esp_wifi
+        nvs_flash
+        lwip
 )

@@ -1,5 +1,6 @@
 import sys
 import serial
+import socket
 import threading
 import time
 from collections import deque
@@ -18,8 +19,14 @@ from influxdb_client import InfluxDBClient, Point, WritePrecision
 from influxdb_client.client.write_api import WriteOptions
 
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
-SERIAL_PORT   = "COM3"
+CONNECTION_MODE = "wifi"   # "serial" or "wifi" - switch this to change source
+
+SERIAL_PORT   = "COM4"
 BAUD_RATE     = 115200
+
+WIFI_HOST     = "192.168.101.78"   # ESP32-C3 IP, printed on boot under [WiFi]
+WIFI_PORT     = 3333
+
 INFLUX_URL    = "http://localhost:8086"
 INFLUX_TOKEN  = "rd0KRAFD_U49DEXyHtVr4hSoshABJB65JfuII5LjNuOM_DvflAp_G9lwBjPsRBpGTQf6pMdPNiPoLhwkHAfaNQ=="
 INFLUX_ORG    = "smartlab"
@@ -33,7 +40,8 @@ STATE_NAMES = {
     1: "FREEFALL",
     2: "IMPACT",
     3: "POST-IMPACT STILLNESS",
-    4: "FALL CONFIRMED"
+    4: "FALL CONFIRMED",
+    5: "FALL ALERTED"
 }
 
 STATE_COLORS = {
@@ -41,7 +49,8 @@ STATE_COLORS = {
     1: "#FFD700",
     2: "#FF6B35",
     3: "#FF8C00",
-    4: "#FF0000"
+    4: "#FF0000",
+    5: "#FF4444"
 }
 
 # ─── INFLUXDB ─────────────────────────────────────────────────────────────────
@@ -72,9 +81,58 @@ latest = {
 data_lock = threading.Lock()
 
 
+# ─── SHARED LINE PARSER ───────────────────────────────────────────────────────
+# Used by both serial_reader() and wifi_reader() so DATA/FALL handling
+# never drifts out of sync between the two connection modes.
+def process_line(line):
+    global global_sample_index
+
+    if line.startswith("DATA,"):
+        parts = line.split(",")
+        if len(parts) == 5:
+            ts  = int(parts[1])
+            acc = float(parts[2])
+            gyr = float(parts[3])
+            st  = int(parts[4])
+            with data_lock:
+                accel_buf.append(acc)
+                gyro_buf.append(gyr)
+                latest["accel"] = acc
+                latest["gyro"]  = gyr
+                latest["state"] = st
+                global_sample_index += 1
+            if influx_ok:
+                point = (
+                    Point("sensor_data")
+                    .field("accel_mag", acc)
+                    .field("gyro_mag",  gyr)
+                    .field("state",     st)
+                    .tag("state_name",  STATE_NAMES.get(st, "UNKNOWN"))
+                    .time(datetime.now(timezone.utc), WritePrecision.MS)
+                )
+                write_api.write(bucket=INFLUX_BUCKET, org=INFLUX_ORG, record=point)
+
+    elif line.startswith("FALL,"):
+        parts = line.split(",")
+        if len(parts) == 2:
+            ts = int(parts[1])
+            with data_lock:
+                latest["fall"]    = True
+                latest["fall_ts"] = ts
+                fall_markers.append(global_sample_index)
+            if influx_ok:
+                point = (
+                    Point("fall_events")
+                    .field("fall_detected",       1)
+                    .field("device_timestamp_ms", ts)
+                    .time(datetime.now(timezone.utc), WritePrecision.MS)
+                )
+                write_api.write(bucket=INFLUX_BUCKET, org=INFLUX_ORG, record=point)
+            print(f"[FALL DETECTED] device_ts={ts}ms")
+
+
 # ─── SERIAL READER ────────────────────────────────────────────────────────────
 def serial_reader():
-    global global_sample_index
     try:
         ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
         print(f"[Serial] Opened {SERIAL_PORT}")
@@ -86,54 +144,47 @@ def serial_reader():
         try:
             raw  = ser.readline()
             line = raw.decode("utf-8", errors="ignore").strip()
-
-            if line.startswith("DATA,"):
-                parts = line.split(",")
-                if len(parts) == 5:
-                    ts  = int(parts[1])
-                    acc = float(parts[2])
-                    gyr = float(parts[3])
-                    st  = int(parts[4])
-                    with data_lock:
-                        accel_buf.append(acc)
-                        gyro_buf.append(gyr)
-                        latest["accel"] = acc
-                        latest["gyro"]  = gyr
-                        latest["state"] = st
-                        global_sample_index += 1
-                    if influx_ok:
-                        point = (
-                            Point("sensor_data")
-                            .field("accel_mag", acc)
-                            .field("gyro_mag",  gyr)
-                            .field("state",     st)
-                            .tag("state_name",  STATE_NAMES.get(st, "UNKNOWN"))
-                            .time(datetime.now(timezone.utc), WritePrecision.MS)
-                        )
-                        write_api.write(bucket=INFLUX_BUCKET, org=INFLUX_ORG, record=point)
-
-            elif line.startswith("FALL,"):
-                parts = line.split(",")
-                if len(parts) == 2:
-                    ts = int(parts[1])
-                    with data_lock:
-                        latest["fall"]    = True
-                        latest["fall_ts"] = ts
-                        # store absolute sample index at the moment of fall
-                        fall_markers.append(global_sample_index)
-                    if influx_ok:
-                        point = (
-                            Point("fall_events")
-                            .field("fall_detected",       1)
-                            .field("device_timestamp_ms", ts)
-                            .time(datetime.now(timezone.utc), WritePrecision.MS)
-                        )
-                        write_api.write(bucket=INFLUX_BUCKET, org=INFLUX_ORG, record=point)
-                    print(f"[FALL DETECTED] device_ts={ts}ms")
-
+            if line:
+                process_line(line)
         except Exception as e:
             print(f"[Serial] Read error: {e}")
             time.sleep(0.1)
+
+
+# ─── WIFI READER ──────────────────────────────────────────────────────────────
+# Connects to the ESP32-C3's TCP server (see wifi_stream.cpp) and reads the
+# exact same DATA/FALL line format as Serial - just over a socket instead.
+def wifi_reader():
+    while True:
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(10)
+            print(f"[WiFi] Connecting to {WIFI_HOST}:{WIFI_PORT}...")
+            sock.connect((WIFI_HOST, WIFI_PORT))
+            sock.settimeout(None)
+            print(f"[WiFi] Connected to {WIFI_HOST}:{WIFI_PORT}")
+
+            buffer = ""
+            while True:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    print("[WiFi] Connection closed by device")
+                    break
+
+                buffer += chunk.decode("utf-8", errors="ignore")
+                while "\n" in buffer:
+                    line, buffer = buffer.split("\n", 1)
+                    line = line.strip()
+                    if line:
+                        process_line(line)
+
+        except Exception as e:
+            print(f"[WiFi] Connection error: {e} - retrying in 2s")
+            try:
+                sock.close()
+            except Exception:
+                pass
+            time.sleep(2)
 
 
 # ─── DASHBOARD ────────────────────────────────────────────────────────────────
@@ -187,6 +238,13 @@ class FallSensorDashboard(QMainWindow):
         self.clock_label.setFont(QFont("Courier New", 11))
         self.clock_label.setStyleSheet("color: #555555; margin-left: 12px;")
         title_row.addWidget(self.clock_label)
+
+        mode_text  = f"WiFi {WIFI_HOST}:{WIFI_PORT}" if CONNECTION_MODE == "wifi" else f"Serial {SERIAL_PORT}"
+        mode_color = "#00BFFF" if CONNECTION_MODE == "wifi" else "#FFD700"
+        self.mode_label = QLabel(mode_text)
+        self.mode_label.setFont(QFont("Courier New", 9))
+        self.mode_label.setStyleSheet(f"color: {mode_color}; margin-left: 12px;")
+        title_row.addWidget(self.mode_label)
         root.addLayout(title_row)
 
         # Stat cards
@@ -428,7 +486,13 @@ class FallSensorDashboard(QMainWindow):
 
 # ─── ENTRY POINT ──────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    reader_thread = threading.Thread(target=serial_reader, daemon=True)
+    if CONNECTION_MODE == "wifi":
+        reader_thread = threading.Thread(target=wifi_reader, daemon=True)
+        print(f"[Mode] WiFi - target {WIFI_HOST}:{WIFI_PORT}")
+    else:
+        reader_thread = threading.Thread(target=serial_reader, daemon=True)
+        print(f"[Mode] Serial - port {SERIAL_PORT}")
+
     reader_thread.start()
 
     app = QApplication(sys.argv)
