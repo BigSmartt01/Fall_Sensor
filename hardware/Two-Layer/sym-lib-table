@@ -1,0 +1,8 @@
+(sym_lib_table
+	(version 7)
+	(lib (name "BMI-160_BREAKOUT") (type "KiCad") (uri "${KIPRJMOD}/libraries/symbols/BMI-160_BREAKOUT.kicad_sym") (options "") (descr ""))
+	(lib (name "ESP32-C3_SUPERMINI_SMD") (type "KiCad") (uri "${KIPRJMOD}/libraries/symbols/ESP32-C3_SUPERMINI_SMD.kicad_sym") (options "") (descr ""))
+	(lib (name "B2B-ZR_LF__SN_") (type "KiCad") (uri "${KIPRJMOD}/libraries/symbols/B2B-ZR_LF__SN_.kicad_sym") (options "") (descr ""))
+	(lib (name "MT3608_MODULE1") (type "Unknown SCH_FILE_T value: 12") (uri "${KIPRJMOD}/libraries/symbols/MT3608_MODULE.kicad_sym") (options "") (descr ""))
+	(lib (name "TP4056_MODULE1") (type "Unknown SCH_FILE_T value: 12") (uri "${KIPRJMOD}/libraries/symbols/TP4056_MODULE.kicad_sym") (options "") (descr ""))
+)
