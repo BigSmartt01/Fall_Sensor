@@ -24,7 +24,7 @@ CONNECTION_MODE = "wifi"   # "serial" or "wifi" - switch this to change source
 SERIAL_PORT   = "COM4"
 BAUD_RATE     = 115200
 
-WIFI_HOST     = "192.168.101.78"   # ESP32-C3 IP, printed on boot under [WiFi]
+WIFI_HOST     = "192.168.101.204"   # ESP32-C3 IP, printed on boot under [WiFi]
 WIFI_PORT     = 3333
 
 INFLUX_URL    = "http://localhost:8086"

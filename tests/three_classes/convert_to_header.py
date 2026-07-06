@@ -4,7 +4,7 @@
 import os
 
 model_path  = r"C:\Users\INNOV8HUB230625\Documents\Projects\Fall_Sensor\tests\three_classes\fall_cnn_qat_int8.tflite"
-output_path = r"C:\Users\INNOV8HUB230625\Documents\Projects\Fall_Sensor\firmware\include\fall_model.h"
+output_path = r"C:\Users\INNOV8HUB230625\Documents\Projects\Fall_Sensor\firmware_idf\main\fall_model.h"
 
 with open(model_path, 'rb') as f:
     model_data = f.read()

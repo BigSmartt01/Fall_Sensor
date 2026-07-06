@@ -8,11 +8,6 @@
 #include "wifi_stream.h"
 #include "nvs_flash.h"
 
-// Pin definitions
-// NodeMCU dev module (Previous test module)
-//#define SDA_PIN 21
-//#define SCL_PIN 22
-
 // ESP32-C3 Super Mini (current)
 #define SDA_PIN     8
 #define SCL_PIN     9
@@ -20,14 +15,14 @@
 #define INT2_PIN    6
 #define BUZZER_PIN  2
 
-// Placeholder until physically wired.
 // Acts as dual-purpose button:
 //   - During STATE_FALL_ALERTED: "I'm okay" -> dismiss alert, return to normal
 //   - During STATE_NORMAL/other: "I need help" -> manual alert, skips detection logic
-// Active LOW with internal pull-up assumed; change pin/logic once wired.
+// Active LOW with internal pull-up.
 #define BUTTON_PIN  3
 
 //const int8_t BMI160_I2C_ADDR = 0x68;  // SDIO pin connected to GND
+struct bmi160Dev dev;
 
 DFRobot_BMI160 bmi160;
 
@@ -59,9 +54,9 @@ const float  GRAVITY_FILTER_ALPHA = 0.05;
 // Recovery from STATE_FALL_ALERTED is judged against THIS, not the
 // pre-fall gravity baseline - the person is expected to still be down
 // until their posture deliberately changes again.
-static float fallOrientX = 0, fallOrientY = 0, fallOrientZ = 0;
-const float  RECOVERY_ORIENTATION_THRESHOLD = 5.0;  // larger than fall-detection threshold - needs deliberate posture change
-const unsigned long ALERT_BUZZ_INTERVAL = 10000;    // re-buzz every 10s while alerted
+static float fallOrientX = 0, fallOrientY   = 0, fallOrientZ = 0;
+const float  RECOVERY_ORIENTATION_THRESHOLD = 5.0;      // larger than fall-detection threshold - needs deliberate posture change
+const unsigned long ALERT_BUZZ_INTERVAL     = 10000;    // re-buzz every 10s while alerted
 
 static float accelHistory[10] = {0};
 static int   historyIndex     = 0;
@@ -196,6 +191,34 @@ void setup() {
     while (1) {
     }
   }
+  // Set BMI160 accel and gyro ODR to 200Hz via direct register write
+  // Register 0x40 (ACC_CONF): bits[3:0] = ODR, 0x09 = 200Hz
+  // Register 0x42 (GYR_CONF): bits[3:0] = ODR, 0x09 = 200Hz
+  uint8_t regVal = 0;
+
+  Wire.beginTransmission(0x68);
+  Wire.write(0x40);
+  Wire.write(0x09);
+  Wire.endTransmission(false);
+  Wire.requestFrom(0x68, 1);
+  if (Wire.available()) {
+    regVal = Wire.read();
+    printf("ACC_CONF register value: 0x%02X\n", regVal);
+  }
+  delay(10);
+
+  Wire.beginTransmission(0x68);
+  Wire.write(0x42);
+  Wire.write(0x09);
+  Wire.endTransmission(false);
+  Wire.requestFrom(0x68, 1);
+  if (Wire.available()) {
+    regVal = Wire.read();
+    printf("GYR_CONF register value: 0x%02X\n", regVal);
+  }
+  delay(10);
+
+  printf("BMI160 ODR set to 200Hz\n");
 
   printf("BMI160 Ready\n");
 
@@ -395,7 +418,7 @@ void fallDetectionTask(void *pvParameters) {
         sensorData.timestamp, sensorData.accelMag, sensorData.gyroMag, (int)fallState);
     }
 
-    vTaskDelay(20 / portTICK_PERIOD_MS);  // 50Hz sampling
+    vTaskDelay(5 / portTICK_PERIOD_MS);  // 50Hz sampling
   }
 }
 
@@ -457,12 +480,12 @@ void buttonTask(void *pvParameters) {
 
       // Wait for release before allowing another trigger
       while (digitalRead(BUTTON_PIN) == LOW) {
-        vTaskDelay(20 / portTICK_PERIOD_MS);
+        vTaskDelay(5 / portTICK_PERIOD_MS);
       }
     }
 
     lastReading = reading;
-    vTaskDelay(20 / portTICK_PERIOD_MS);
+    vTaskDelay(5 / portTICK_PERIOD_MS); // 200Hz sampling
   }
 }
 

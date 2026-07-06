@@ -4,7 +4,6 @@
 #include <tensorflow/lite/micro/micro_mutable_op_resolver.h>
 #include <tensorflow/lite/micro/micro_interpreter.h>
 #include <tensorflow/lite/schema/schema_generated.h>
-//#include <tensorflow/lite/micro/micro_error_reporter.h>
 
 #include <Arduino.h>
 #include <algorithm>
@@ -30,6 +29,14 @@ float sample_window[kInferenceWindowSize];
 int   window_count       = 0;
 int   window_write_index = 0;
 
+// ─── CONSECUTIVE DETECTION FILTER ────────────────────────────────────────────
+// Fall is only confirmed when 3 consecutive inference runs each return
+// probability >= 0.80. A single high reading is not enough.
+// Resets to 0 any time a run returns below the threshold.
+constexpr int   kRequiredConsecutiveDetections = 3;
+constexpr float kFallProbabilityThreshold      = 0.80f;
+static int      consecutiveFallCount           = 0;
+
 int quantizeFloatToInt8(float value, float scale, int32_t zero_point) {
   if (scale == 0.0f) return 0;
   int32_t q = static_cast<int32_t>(lroundf(value / scale) + zero_point);
@@ -50,12 +57,9 @@ bool initializeInference() {
     if (model->version() != TFLITE_SCHEMA_VERSION) {
       printf("Model schema mismatch: got %lu, expected %lu\n",
                     (unsigned long)model->version(), (unsigned long)TFLITE_SCHEMA_VERSION);
-      printf("SCHEMA FAIL\n");              
       return false;
     }
 
-    // AllOpsResolver includes all ops - fine for dev
-    // Switch to MicroMutableOpResolver later to save flash
     static tflite::MicroMutableOpResolver<8> resolver;
     resolver.AddAdd();
     resolver.AddConv2D();
@@ -66,7 +70,6 @@ bool initializeInference() {
     resolver.AddMul();
     resolver.AddReshape();
 
-    // Construct interpreter with arguments
     static tflite::MicroInterpreter static_interpreter(
           model, resolver, tensor_arena, kTensorArenaSize);
 
@@ -90,7 +93,6 @@ bool initializeInference() {
     output_scale      = output_tensor->params.scale;
     output_zero_point = output_tensor->params.zero_point;
 
-    // Print input shape
     printf("Input shape: ");
     int input_elements = 1;
     for (int i = 0; i < input_tensor->dims->size; i++) {
@@ -101,7 +103,6 @@ bool initializeInference() {
     printf("Input quant:  scale=%.8f  zero_point=%ld\n",
                   input_scale, static_cast<long>(input_zero_point));
 
-    // Print output shape
     printf("Output shape: ");
     int output_elements = 1;
     for (int i = 0; i < output_tensor->dims->size; i++) {
@@ -112,7 +113,6 @@ bool initializeInference() {
     printf("Output quant: scale=%.8f  zero_point=%ld\n",
                   output_scale, static_cast<long>(output_zero_point));
 
-    // Sanity checks
     if (input_elements != kInferenceWindowSize) {
         printf("WARNING: model expects %d inputs, firmware window is %d\n",
                       input_elements, kInferenceWindowSize);
@@ -121,8 +121,9 @@ bool initializeInference() {
         printf("WARNING: expected 1 output (sigmoid), got %d\n", output_elements);
     }
 
-    window_count       = 0;
-    window_write_index = 0;
+    window_count            = 0;
+    window_write_index      = 0;
+    consecutiveFallCount    = 0;
 
     getInferenceMemoryInfo();
     printf("TFLite Micro initialized successfully.\n");
@@ -153,7 +154,7 @@ bool runInference(InferenceOutput& output) {
   }
 
   int8_t*   input_data = input_tensor->data.int8;
-  const int start      = window_write_index;  // oldest sample in ring buffer
+  const int start      = window_write_index;
 
   for (int i = 0; i < kInferenceWindowSize; i++) {
     const float value = sample_window[(start + i) % kInferenceWindowSize];
@@ -174,10 +175,33 @@ bool runInference(InferenceOutput& output) {
   const int8_t raw_out = output_tensor->data.int8[0];
   const float  dequant = dequantizeInt8ToFloat(raw_out, output_scale, output_zero_point);
 
-  // Matches train_qat.py: predicted = 1 if output[0][0] > 0 else 0
-  output.predictedClass    = (raw_out > 0) ? 1 : 0;
   output.fallProbability   = std::max(0.0f, std::min(1.0f, dequant));
   output.normalProbability = 1.0f - output.fallProbability;
+
+  // ─── CONSECUTIVE DETECTION FILTER ──────────────────────────────────────────
+  // Increment counter if this run exceeds threshold, reset otherwise.
+  // predictedClass is only 1 (fall) once kRequiredConsecutiveDetections
+  // consecutive runs have all exceeded kFallProbabilityThreshold.
+  // This prevents a single spurious high-probability output from triggering
+  // a false alarm.
+  if (output.fallProbability >= kFallProbabilityThreshold) {
+    consecutiveFallCount++;
+  } else {
+    consecutiveFallCount = 0;
+  }
+
+  if (consecutiveFallCount >= kRequiredConsecutiveDetections) {
+    output.predictedClass = 1;
+    consecutiveFallCount  = 0;  // reset after confirmed - next event needs 3 fresh runs
+    printf("ML: FALL CONFIRMED after %d consecutive detections (prob=%.3f)\n",
+           kRequiredConsecutiveDetections, output.fallProbability);
+  } else {
+    output.predictedClass = 0;
+    printf("ML: prob=%.3f consecutive=%d/%d\n",
+           output.fallProbability,
+           consecutiveFallCount,
+           kRequiredConsecutiveDetections);
+  }
 
   return true;
 }
@@ -191,17 +215,18 @@ void getInferenceMemoryInfo() {
                   static_cast<unsigned>(used),
                   100.0f * used / kTensorArenaSize);
   }
-  printf("Window:             %d samples (%.2f s at 50 Hz)\n",
+  printf("Window:             %d samples (%.2f s at 200 Hz)\n",
                 kInferenceWindowSize,
-                kInferenceWindowSize / 50.0f);
+                kInferenceWindowSize / 200.0f);
   printf("========================\n");
 }
 
 void deinitializeInference() {
-  interpreter  = nullptr;
-  model        = nullptr;
-  input_tensor = nullptr;
+  interpreter   = nullptr;
+  model         = nullptr;
+  input_tensor  = nullptr;
   output_tensor = nullptr;
-  window_count       = 0;
-  window_write_index = 0;
+  window_count            = 0;
+  window_write_index      = 0;
+  consecutiveFallCount    = 0;
 }
