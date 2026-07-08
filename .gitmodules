@@ -1,6 +1,8 @@
 [submodule "firmware_idf/components/DFRobot_BMI160"]
 	path = firmware_idf/components/DFRobot_BMI160
 	url = https://github.com/DFRobot/DFRobot_BMI160.git
+	branch = master
 [submodule "firmware_idf/components/esp-tflite-micro"]
 	path = firmware_idf/components/esp-tflite-micro
 	url = https://github.com/espressif/esp-tflite-micro.git
+	branch = master
