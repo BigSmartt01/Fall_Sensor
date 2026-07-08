@@ -8,13 +8,16 @@ extern "C" {
 #endif
 
 /**
- * Initialize WiFi station mode and start a TCP server.
- * Blocks until WiFi is connected or times out (30s).
+ * Initialize WiFi using NVS-stored credentials (STA + TCP stream server).
+ * If credentials are missing or STA connect fails, starts softAP
+ * "FallSensor_AP" with a captive portal (DNS catch-all + OS probe endpoints)
+ * so the credential form opens automatically on phones/PCs.
+ * Captive portal path blocks until credentials are saved and the device reboots.
  * Call once from setup() after BMI160 init.
  *
- * @param ssid     Your WiFi network name
- * @param password Your WiFi password
- * @param port     TCP port to listen on (e.g. 3333)
+ * @param ssid     Unused (legacy); credentials come from NVS or softAP form
+ * @param password Unused (legacy); credentials come from NVS or softAP form
+ * @param port     TCP port for dashboard streaming after STA connect (e.g. 3333)
  */
 void wifiStreamInit(const char* ssid, const char* password, uint16_t port);
 

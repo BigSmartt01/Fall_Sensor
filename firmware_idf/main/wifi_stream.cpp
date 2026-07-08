@@ -7,16 +7,28 @@
 #include <string.h>
 #include <Preferences.h>
 #include <WebServer.h>
+#include <DNSServer.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 
 // ─── CONFIG ───────────────────────────────────────────────────────────────────
-#define WIFI_CONNECT_TIMEOUT_MS  30000
+#define WIFI_CONNECT_TIMEOUT_MS  10000
 #define TCP_MAX_LINE_LEN         256
 #define TCP_TASK_STACK           4096
 #define TCP_TASK_PRIORITY        1
+#define DNS_PORT                 53
+
+// SoftAP default IP used by WiFi.softAP() and advertised via captive DNS.
+static const IPAddress kApIP(192, 168, 4, 1);
+
+// Existing credential form HTML — keep byte-for-byte identical to prior behavior.
+static const char kPortalFormHtml[] =
+    "<form action='/save' method='POST'>"
+    "SSID:<input name='ssid'><br>"
+    "Password:<input name='pass'><br>"
+    "<input type='submit'></form>";
 
 // ─── STATE ────────────────────────────────────────────────────────────────────
 static WiFiServer*   tcpServer   = nullptr;
@@ -30,6 +42,7 @@ static void tcpAcceptTask(void* pvParameters);
 
 Preferences prefs;
 WebServer server(80);
+DNSServer dnsServer;
 
 void saveCredentials(const char* ssid, const char* password) {
     prefs.begin("wifi", false);
@@ -46,18 +59,50 @@ bool loadCredentials(String &ssid, String &pass) {
     return ssid.length() > 0;
 }
 
-void startAP() {
-    WiFi.softAP("FallSensor_AP", "12345678");
-    printf("[WiFi] AP started. Connect to SSID 'FallSensor_AP' and open 192.168.4.1\n");
+// Serve the WiFi credential form (same HTML as before).
+static void sendPortalForm() {
+    server.send(200, "text/html", kPortalFormHtml);
+}
 
+// HTTP 302 to the portal root — used for OS captive-portal probes and unknown URLs.
+// When the probe does not get its expected "success" body, the OS opens this page.
+static void redirectToPortal() {
+    String location = String("http://") + WiFi.softAPIP().toString() + "/";
+    server.sendHeader("Location", location, true);
+    server.send(302, "text/plain", "");
+}
+
+void startAP() {
+    WiFi.mode(WIFI_AP);
+    WiFi.softAP("FallSensor_AP", "12345678");
+
+    // Advertise captive-portal URL via DHCP option 114 (IDF >= 5.4.2 / modern OSes).
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 4, 2)
+    if (WiFi.AP.enableDhcpCaptivePortal()) {
+        printf("[WiFi] DHCP captive portal URI enabled\n");
+    } else {
+        printf("[WiFi] DHCP captive portal URI not enabled (DNS/HTTP still active)\n");
+    }
+#endif
+
+    // Catch-all DNS: every query resolves to the softAP IP so phones hit our HTTP server.
+    // domainName "*" → captive mode (empty domain match in DNSServer).
+    if (dnsServer.start(DNS_PORT, "*", kApIP)) {
+        printf("[WiFi] DNS captive portal started (all queries -> %s)\n",
+               kApIP.toString().c_str());
+    } else {
+        printf("[WiFi] ERROR: DNS server failed to start\n");
+    }
+
+    printf("[WiFi] AP started. Connect to SSID 'FallSensor_AP' — captive portal opens automatically\n");
+    printf("[WiFi] Manual fallback: open http://%s/\n", WiFi.softAPIP().toString().c_str());
+
+    // Credential form (unchanged)
     server.on("/", []() {
-        server.send(200, "text/html",
-            "<form action='/save' method='POST'>"
-            "SSID:<input name='ssid'><br>"
-            "Password:<input name='pass'><br>"
-            "<input type='submit'></form>");
+        sendPortalForm();
     });
 
+    // NVS save + reboot (unchanged)
     server.on("/save", []() {
         String ssid = server.arg("ssid");
         String pass = server.arg("pass");
@@ -67,11 +112,36 @@ void startAP() {
         ESP.restart();
     });
 
+    // ── Captive portal detection endpoints ────────────────────────────────────
+    // Phones hit these after connecting. Any non-"success" response (redirect or
+    // portal HTML) triggers the automatic login / CNA popup.
+
+    // Android ConnectivityManager (and some Chromebook / Fire OS variants)
+    server.on("/generate_204", HTTP_ANY, redirectToPortal);
+    server.on("/gen_204", HTTP_ANY, redirectToPortal);
+
+    // Apple Captive Network Assistant (iOS / macOS)
+    server.on("/hotspot-detect.html", HTTP_ANY, sendPortalForm);
+    server.on("/library/test/success.html", HTTP_ANY, sendPortalForm);
+
+    // Windows NCSI
+    server.on("/connecttest.txt", HTTP_ANY, redirectToPortal);
+    server.on("/ncsi.txt", HTTP_ANY, redirectToPortal);
+    server.on("/redirect", HTTP_ANY, redirectToPortal);
+    server.on("/fwlink", HTTP_ANY, redirectToPortal);
+
+    // Firefox / misc
+    server.on("/success.txt", HTTP_ANY, redirectToPortal);
+    server.on("/canonical.html", HTTP_ANY, sendPortalForm);
+
+    // Any other host/path (DNS already pointed here) → portal
+    server.onNotFound(redirectToPortal);
+
     server.begin();
 }
 
 bool tryConnect(const char* ssid, const char* password) {
-    for (int attempt = 0; attempt < 10; attempt++) {
+    for (int attempt = 0; attempt < 5; attempt++) {
         WiFi.begin(ssid, password);
         unsigned long start = millis();
         while (WiFi.status() != WL_CONNECTED && millis() - start < WIFI_CONNECT_TIMEOUT_MS) {
@@ -88,6 +158,8 @@ bool tryConnect(const char* ssid, const char* password) {
 
 // ─── PUBLIC API ───────────────────────────────────────────────────────────────
 void wifiStreamInit(const char* ssid, const char* password, uint16_t port) {
+    (void)ssid;
+    (void)password;
     tcpPort = port;
     clientMutex = xSemaphoreCreateMutex();
     if (clientMutex == NULL) {
@@ -113,9 +185,12 @@ void wifiStreamInit(const char* ssid, const char* password, uint16_t port) {
         }
     }
 
-    // If no credentials or failed after retries → AP fallback
+    // If no credentials or failed after retries → AP + captive portal
     startAP();
     while (true) {
+        // DNSServer is AsyncUDP-based; processNextRequest() is a no-op stub.
+        // Keep the call for API familiarity / future core changes.
+        dnsServer.processNextRequest();
         server.handleClient();
         vTaskDelay(pdMS_TO_TICKS(10));
     }
