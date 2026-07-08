@@ -5,6 +5,8 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
+#include <Preferences.h>
+#include <WebServer.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -26,10 +28,67 @@ static char          ipStr[20]   = "0.0.0.0";
 // ─── FORWARD DECLARATIONS ────────────────────────────────────────────────────
 static void tcpAcceptTask(void* pvParameters);
 
+Preferences prefs;
+WebServer server(80);
+
+void saveCredentials(const char* ssid, const char* password) {
+    prefs.begin("wifi", false);
+    prefs.putString("ssid", ssid);
+    prefs.putString("pass", password);
+    prefs.end();
+}
+
+bool loadCredentials(String &ssid, String &pass) {
+    prefs.begin("wifi", true);
+    ssid = prefs.getString("ssid", "");
+    pass = prefs.getString("pass", "");
+    prefs.end();
+    return ssid.length() > 0;
+}
+
+void startAP() {
+    WiFi.softAP("FallSensor_AP", "12345678");
+    printf("[WiFi] AP started. Connect to SSID 'FallSensor_AP' and open 192.168.4.1\n");
+
+    server.on("/", []() {
+        server.send(200, "text/html",
+            "<form action='/save' method='POST'>"
+            "SSID:<input name='ssid'><br>"
+            "Password:<input name='pass'><br>"
+            "<input type='submit'></form>");
+    });
+
+    server.on("/save", []() {
+        String ssid = server.arg("ssid");
+        String pass = server.arg("pass");
+        saveCredentials(ssid.c_str(), pass.c_str());
+        server.send(200, "text/html", "Saved! Rebooting...");
+        delay(1000);
+        ESP.restart();
+    });
+
+    server.begin();
+}
+
+bool tryConnect(const char* ssid, const char* password) {
+    for (int attempt = 0; attempt < 10; attempt++) {
+        WiFi.begin(ssid, password);
+        unsigned long start = millis();
+        while (WiFi.status() != WL_CONNECTED && millis() - start < WIFI_CONNECT_TIMEOUT_MS) {
+            vTaskDelay(pdMS_TO_TICKS(500));
+        }
+        if (WiFi.status() == WL_CONNECTED) {
+            printf("[WiFi] Connected to %s, IP: %s\n", ssid, WiFi.localIP().toString().c_str());
+            return true;
+        }
+        printf("[WiFi] Attempt %d failed\n", attempt+1);
+    }
+    return false;
+}
+
 // ─── PUBLIC API ───────────────────────────────────────────────────────────────
 void wifiStreamInit(const char* ssid, const char* password, uint16_t port) {
     tcpPort = port;
-
     clientMutex = xSemaphoreCreateMutex();
     if (clientMutex == NULL) {
         printf("[WiFi] Failed to create mutex\n");
@@ -38,22 +97,11 @@ void wifiStreamInit(const char* ssid, const char* password, uint16_t port) {
 
     WiFi.mode(WIFI_STA);
 
-    while (true) {
-        printf("[WiFi] Connecting to %s", ssid);
-        WiFi.disconnect(true);
-        WiFi.begin(ssid, password);
-
-        unsigned long start = millis();
-        while (WiFi.status() != WL_CONNECTED && millis() - start < WIFI_CONNECT_TIMEOUT_MS) {
-            vTaskDelay(pdMS_TO_TICKS(500));
-            printf(".");
-        }
-
-        if (WiFi.status() == WL_CONNECTED) {
-            printf("\n[WiFi] Connected. IP: %s\n", WiFi.localIP().toString().c_str());
+    String storedSsid, storedPass;
+    if (loadCredentials(storedSsid, storedPass)) {
+        if (tryConnect(storedSsid.c_str(), storedPass.c_str())) {
+            // Connected → start TCP server
             strncpy(ipStr, WiFi.localIP().toString().c_str(), sizeof(ipStr) - 1);
-
-            // Start TCP server
             tcpServer = new WiFiServer(tcpPort);
             tcpServer->begin();
             printf("[WiFi] TCP server listening on port %d\n", tcpPort);
@@ -61,14 +109,17 @@ void wifiStreamInit(const char* ssid, const char* password, uint16_t port) {
 
             // Spawn accept task
             xTaskCreate(tcpAcceptTask, "TCP Accept", TCP_TASK_STACK, NULL, TCP_TASK_PRIORITY, NULL);
-            break;  // exit retry loop once connected
-        } else {
-            printf("\n[WiFi] Connection failed, retrying in 10s...\n");
-            vTaskDelay(pdMS_TO_TICKS(10000));
+            return;
         }
     }
-}
 
+    // If no credentials or failed after retries → AP fallback
+    startAP();
+    while (true) {
+        server.handleClient();
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
 
 void wifiStreamSend(const char* line) {
     if (clientMutex == NULL) return;

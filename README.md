@@ -1,202 +1,192 @@
-# Fall Sensor - ESP32 Fall Detection System
+# Fall Sensor - ESP32-C3 Wearable Fall Detection System
 
 ## Overview
 
-Fall Sensor is an intelligent fall detection system built on the ESP32 NodeMCU (final target: ESP32-C3 Super Mini) using the MPU6050 6-axis motion sensor. The system combines a rule-based state machine with a trained CNN neural network for high-confidence fall detection, targeting elderly users with waist/lower-back placement.
+An intelligent wearable fall detection system built on the ESP32-C3 Super Mini with BMI160 IMU, targeting elderly users with waist/lower-back placement. The system combines a 4-stage rule-based state machine with an on-device CNN (TFLite Micro, int8 QAT) for high-confidence detection. A persistent alerted state holds the alert active until the person's posture changes or they self-dismiss, preventing the common problem of fall alerts clearing while the person is still on the floor.
 
-The dual-layer approach uses the state machine as a fast pre-filter and the ML model as a confirmation layer, minimizing both false positives and false negatives.
-
-## Features
-
-- Real-time fall detection at 50Hz via 4-stage state machine
-- CNN-based ML confirmation layer (94.78% accuracy, 97.63% fall recall)
-- Dual confirmation: fall only confirmed when both state machine and ML agree
-- FreeRTOS task-based architecture with three concurrent tasks
-- Thread-safe state sharing via FreeRTOS EventGroups
-- Adaptive gravity baseline using continuous low-pass filtering
-- Live PyQtGraph dashboard with real-time waveform monitoring
-- InfluxDB + Grafana logging via Docker for post-event analysis
-- Quantization-aware trained int8 TFLite model (16.9KB flash, 47.1KB RAM)
+Real-time data streams over WiFi TCP to a PyQtGraph dashboard and InfluxDB/Grafana stack for threshold tuning and post-event analysis. A dual-purpose button handles both "I'm okay" dismissal and manual "I need help" alerts.
 
 ## Hardware
 
-- Current dev board: ESP32 NodeMCU
-- Final target: ESP32-C3 Super Mini (low power, portable)
-- IMU: MPU6050 (current) - switching to BMI160 on AliExpress delivery
-- Interface: I2C - SDA: Pin 16, SCL: Pin 17
-- I2C address: 0x68
-- AliExpress batch order placed May 2026
+| Component | Part | Notes |
+|---|---|---|
+| MCU | ESP32-C3 Super Mini | USB-CDC, BLE, WiFi |
+| IMU | BMI160 | I2C 0x68, ODR 200Hz |
+| Charger | TP4056 | LiPo, 4.2V cutoff |
+| Boost converter | MT3608 | Battery -> 5V rail |
+| Buzzer | Passive buzzer | Active LOW driver |
+| Button | Tactile switch | Dual-purpose: dismiss/SOS |
+| Board | 5x7cm perfboard | Power/signal zone separated |
+
+**Pin assignments (ESP32-C3 Super Mini):**
+
+| Pin | Function |
+|---|---|
+| GPIO8 | SDA (BMI160) |
+| GPIO9 | SCL (BMI160) |
+| GPIO2 | Buzzer |
+| GPIO3 | Button (INPUT_PULLUP, active LOW) |
+| GPIO4 | BMI160 INT1 (reserved) |
+| GPIO5 | BMI160 INT2 (reserved) |
+
+**Power path:** LiPo -> TP4056 (charge management) -> MT3608 (boost to 5V) -> ESP32-C3 5V pin -> onboard LDO -> 3.3V rail -> BMI160 VCC
 
 ## Project Structure
 
 ```
 Fall_Sensor/
-├── firmware/               # ESP32 PlatformIO project
-│   ├── src/
-│   │   └── main.cpp        # State machine + ML inference firmware
-│   └── include/
-│       └── fall_model.h    # Auto-generated TFLite model header
+├── firmware_idf/                    # ESP-IDF project (active)
+│   ├── CMakeLists.txt
+│   ├── partitions.csv               # custom 3MB app partition for ESP32-C3 4MB flash
+│   ├── sdkconfig.defaults
+│   ├── main/
+│   │   ├── CMakeLists.txt
+│   │   ├── fall_sensor.cpp          # app_main() entry point
+│   │   ├── main.cpp                 # state machine + BMI160 + tasks
+│   │   ├── inference.cpp            # TFLite Micro wrapper + consecutive filter
+│   │   ├── inference.h
+│   │   ├── wifi_stream.cpp          # WiFi TCP server for dashboard streaming
+│   │   ├── wifi_stream.h
+│   │   └── fall_model.h             # auto-generated model C header
+│   └── components/
+│       ├── esp-tflite-micro/        # git submodule (espressif official)
+│       ├── DFRobot_BMI160/          # git submodule (unmodified)
+│       └── DFRobot_BMI160_wrapper/  # local CMakeLists.txt wrapper (tracked)
+├── firmware/                        # legacy PlatformIO attempt - kept for reference
 ├── docs/
-│   └── ERRORS_AND_FIXES.md
-├── hardware/               # Schematics, BOM
+│   ├── ERRORS_AND_FIXES.md
+│   └── ML_README.md
+├── hardware/                        # KiCad schematics, BOM, perfboard layout
 ├── visualization/
-│   ├── bridge.py           # Serial to InfluxDB bridge
-│   ├── dashboard.py        # PyQtGraph real-time dashboard
-│   └── docker-compose.yml  # InfluxDB + Grafana stack
+│   ├── bridge.py                    # Serial to InfluxDB bridge
+│   ├── dashboard.py                 # PyQtGraph dashboard (serial + WiFi TCP modes)
+│   └── docker-compose.yml           # InfluxDB + Grafana stack
 ├── tests/
-│   ├── three_classes/      # ML training pipeline
+│   ├── three_classes/               # ML training pipeline
 │   │   ├── inspect_dataset.py
 │   │   ├── train_cnn.py
 │   │   ├── train_qat.py
 │   │   ├── quantize_model.py
 │   │   ├── check_model.py
 │   │   ├── convert_to_header.py
-│   │   ├── fall_cnn_model.keras
-│   │   ├── fall_cnn_model.tflite
+│   │   ├── list_ops.py
 │   │   └── fall_cnn_qat_int8.tflite
-│   ├── edge_impulse_data/      # Full windowed dataset (2.41GB)
-│   ├── edge_impulse_data_v2/   # Renamed files with subject ID (2.41GB)
-│   └── edge_impulse_sample_v3/ # Balanced SE-weighted sample (550MB)
+│   └── edge_impulse_sample_v3/      # balanced SE-weighted sample (not tracked)
 ├── requirements.txt
 ├── .gitignore
 └── README.md
 ```
 
-## ML Pipeline
+## Cloning
 
-### Dataset
-
-SisFall dataset - 4,505 files covering 19 ADL types and 15 fall types from 38 subjects (23 adults SA, 15 elderly SE aged 60-75). Sensor: MMA8451Q accelerometer (columns 7-9) + ITG3200 gyroscope (columns 4-6) at 200Hz.
-
-Download: https://www.kaggle.com/datasets/miguelcleon/sisfall
-Project Specific Dataset: https://drive.google.com/drive/folders/15SgO6iG2RPyiFsliloQe3vbxPI25NKtl?usp=drive_link
-
-### Data Preparation
+This project uses git submodules. Clone with:
 
 ```bash
-python tests/prepare_dataset.py    # window and convert to CSV
-python tests/sample_dataset.py     # balance SE/SA ratio
+git clone --recurse-submodules <repo-url>
 ```
 
-- Window size: 200 samples (1 second at 200Hz)
-- Step size: 100 samples (50% overlap)
-- Output: 153,705 windows (52,019 fall, 101,686 ADL)
-- Final balanced sample: 17,124 fall + 17,124 ADL (SE-weighted, 30% SA)
-
-### Model Architecture
-
-Lightweight 1D CNN trained with quantization-aware training from the start:
-
-```
-Input (512, 1)
-Conv1D(8, kernel=5) + BatchNorm + MaxPool(4)
-Conv1D(16, kernel=3) + BatchNorm + MaxPool(4)
-Conv1D(32, kernel=3) + BatchNorm + MaxPool(4)
-Flatten
-Dense(16) + Dropout(0.3)
-Output sigmoid
-```
-
-Total parameters: ~15,000 (vs 540,000 in the full model)
-
-### Training
+If already cloned:
 
 ```bash
-cd tests/three_classes
-python train_qat.py
+git submodule update --init --recursive
 ```
 
-- Step 1: Train base model (20 epochs, early stopping)
-- Step 2: Apply QAT fine-tuning (10 epochs, lower LR)
-- Step 3: Convert to int8 TFLite
-- Step 4: Verify accuracy and RAM usage
+## Building and Flashing
 
-### Model Performance
-
-| Metric | Value |
-|---|---|
-| Overall accuracy | 94.78% |
-| Fall recall | 97.63% |
-| ADL recall | 94.72% |
-| Flash size | 16.9 KB |
-| Inference RAM | 47.1 KB |
-| ESP32-C3 flash limit | 4096 KB |
-| ESP32-C3 RAM limit | 320 KB |
-
-### Generating the C Header
+Open ESP-IDF terminal in VS Code (`Ctrl+Shift+P` -> ESP-IDF: Open ESP-IDF Terminal):
 
 ```bash
-python tests/three_classes/convert_to_header.py
+cd firmware_idf
+idf.py set-target esp32c3
+idf.py build
+idf.py -p COM7 flash monitor
 ```
 
-Outputs `firmware/include/fall_model.h` - the model embedded as a uint8_t array.
+Exit monitor: `Ctrl+]`
+
+On first build after a clean or target change, delete `sdkconfig` (not `sdkconfig.defaults`) before running `set-target` to avoid stale target conflicts.
 
 ## How It Works
 
-### Dual-Layer Detection
+### State Machine
 
 ```
-Sensor (50Hz)
-     |
-     v
-State Machine (fast, rule-based)
-     |
-     |-- No freefall --> continue
-     |
-     v
-State: POST_IMPACT_STILLNESS confirmed
-     |
-     v
-ML Inference (CNN, runs every 2 seconds)
-     |
-     |-- ML says NO --> discard (false alarm)
-     |-- ML says YES --> FALL CONFIRMED
-     |
-     v
-Alert triggered
+STATE_NORMAL
+  accelMag < 3.0 m/s²  ->  STATE_FREEFALL  (timeout 400ms)
+  
+STATE_FREEFALL
+  accelMag > 20.0 m/s² ->  STATE_IMPACT    (window 500ms)
+  
+STATE_IMPACT
+  gyroMag < 25 deg/s   ->  STATE_POST_IMPACT_STILLNESS
+  
+STATE_POST_IMPACT_STILLNESS
+  stillness 2.5s + orientation change + NN confirms  ->  STATE_FALL_CONFIRMED
+  
+STATE_FALL_CONFIRMED
+  captures fall orientation, triggers buzzer, fires FALL event
+  ->  STATE_FALL_ALERTED  (persistent - does not auto-clear)
+  
+STATE_FALL_ALERTED
+  re-buzzes every 10s
+  posture change > 2.0 m/s² delta  ->  STATE_NORMAL
+  button press ("I'm okay")        ->  STATE_NORMAL
 ```
 
-### State Machine Stages
-
-**Stage 1: Freefall** - accel magnitude drops below 3.0 m/s², timeout 400ms
-
-**Stage 2: Impact** - accel magnitude exceeds 20.0 m/s² within 500ms of freefall
-
-**Stage 3: Post-impact stillness** - gyro below 25 deg/s, accel variance below 1.0, sustained 2.5 seconds
-
-**Stage 4: Orientation verification** - orientation change vs pre-fall baseline exceeds 0.5 m/s²
-
-### Gravity Vector
-
-Continuously updated during STATE_NORMAL using low-pass filter (alpha=0.05):
-```
-gravity = gravity x (1 - alpha) + current_accel x alpha
-```
+Any state: button press outside STATE_FALL_ALERTED -> manual "I need help" alert
 
 ### ML Inference
 
-Runs as a separate FreeRTOS task (priority 1) every 2 seconds on a 512-sample sliding window of accel magnitude. Input quantized float32 to int8 using model scale/zero_point. Output probability threshold: 0.5.
+- Model: lightweight 1D CNN, int8 QAT, 16.9KB flash, 47.1KB RAM
+- Input: 512-sample sliding window of accel Y (in g) at 200Hz = 2.56 second window
+- Consecutive filter: 3 consecutive runs >= 80% probability required before confirming
+- Falls back to rule-based alone if window not yet full
 
-## Serial Output Format
+### Sensor Configuration
+
+BMI160 ODR set to 200Hz via direct register write after I2cInit():
+
+```cpp
+Wire.beginTransmission(0x68);
+Wire.write(0x40); Wire.write(0x09);  // ACC_CONF: 200Hz
+Wire.endTransmission();
+
+Wire.beginTransmission(0x68);
+Wire.write(0x42); Wire.write(0x09);  // GYR_CONF: 200Hz
+Wire.endTransmission();
+```
+
+BMI160 init order matters: `softReset()` must be called before `I2cInit()`. Reversed order causes silent all-zero readings.
+
+## Serial/WiFi Output Format
 
 ```
 DATA,<timestamp_ms>,<accelMag>,<gyroMag>,<state>
 FALL,<timestamp_ms>
-ML: prob=<value> fall=<YES|NO>
 ```
 
-State values: 0=NORMAL, 1=FREEFALL, 2=IMPACT, 3=POST-IMPACT STILLNESS, 4=FALL CONFIRMED
+State values: 0=NORMAL, 1=FREEFALL, 2=IMPACT, 3=POST-IMPACT STILLNESS, 4=FALL CONFIRMED, 5=FALL ALERTED
+
+Output goes to both USB Serial (printf) and WiFi TCP simultaneously.
 
 ## Visualization
 
-### Real-Time Dashboard
+### Dashboard (PyQtGraph)
 
 ```bash
 cd visualization
 python dashboard.py
 ```
 
-Close VS Code serial monitor first. Updates every 20ms. Pause/Resume button for fall event inspection.
+Switch between serial and WiFi at the top of the file:
+
+```python
+CONNECTION_MODE = "serial"   # or "wifi"
+WIFI_HOST       = "192.168.x.x"   # ESP32-C3 IP printed on boot
+WIFI_PORT       = 3333
+```
+
+The ESP32-C3 IP is printed on boot: `[WiFi] Connect dashboard with: TCP <IP>:3333`
 
 ### InfluxDB + Grafana
 
@@ -205,25 +195,35 @@ cd visualization
 docker compose up -d
 ```
 
-- InfluxDB: http://localhost:8086
+- InfluxDB: http://localhost:8086 (bucket: fallsensor, org: smartlab)
 - Grafana: http://localhost:3000
-- Bucket: fallsensor, Org: smartlab
 
-### Python Bridge (serial to InfluxDB)
+## ML Pipeline
 
-```bash
-python visualization/bridge.py
-```
+See [docs/ML_README.md](docs/ML_README.md) for full training and quantization details.
 
-## Building Firmware
+Quick retrain after any model or dataset change:
 
 ```bash
-platformio run --environment esp32-s3-devkitc-1
-platformio run --target upload --environment esp32-s3-devkitc-1
-platformio device monitor --baud 115200
+cd tests/three_classes
+venv_compat\Scripts\activate    # Python 3.10 required - TF not yet on 3.13+
+python train_qat.py
+python convert_to_header.py     # outputs firmware_idf/main/fall_model.h
+cd ../../firmware_idf
+idf.py build
+idf.py -p COM7 flash monitor
 ```
 
-Note: close serial monitor before running dashboard.py or bridge.py.
+### Current Model Performance
+
+| Metric | Value |
+|---|---|
+| Overall accuracy | 95.21% |
+| Fall recall | 97.38% |
+| ADL recall | 95.16% |
+| Flash | 16.9 KB |
+| Inference RAM | 47.1 KB |
+| Window | 512 samples at 200Hz = 2.56s |
 
 ## Python Dependencies
 
@@ -231,37 +231,21 @@ Note: close serial monitor before running dashboard.py or bridge.py.
 pip install -r requirements.txt
 ```
 
-```
-pyserial
-influxdb-client
-pyqtgraph
-PyQt6
-numpy
-tensorflow
-tensorflow-model-optimization
-scikit-learn
-```
+ML training scripts require Python 3.10 in a separate venv (`venv_compat`) - TensorFlow does not support Python 3.13+.
 
 ## Future Work
 
-- BMI160 sensor swap on hardware delivery
-- Retrain CNN on BMI160-equivalent sensor axes from SisFall
-- BLE WiFi provisioning for wireless Grafana streaming
-- HTTP POST to InfluxDB over WiFi
-- Buzzer and alert hardware integration
-- Enclosure: waist/belt-clip form factor, 3D printed
-- Collect real elderly fall simulation data for fine-tuning
+- PCB design: 2-layer board, BMI160 and ESP32-C3 Super Mini as soldered modules on carrier, discrete power section
+- Enclosure: TPU 3D printed, waist/belt-clip form factor
+- BLE alert path for phone app connectivity
+- SIM/GPS module on existing 5V rail for cellular fallback
+- BMI160 INT1/INT2 for hardware step detection and low-power motion-wake
+- Collect real elderly fall simulation data for model fine-tuning
+- ECG/biopotential front-end as next project (AD8232)
 
 ## Troubleshooting
 
-See docs/ERRORS_AND_FIXES.md
-
-## Dependencies
-
-- espressif32: ESP32 platform
-- electroniccats/MPU6050: IMU library
-- TFLite Micro: tensorflow/lite/micro (ESP-IDF component)
-- FreeRTOS: included with Arduino ESP32 core
+See [docs/ERRORS_AND_FIXES.md](docs/ERRORS_AND_FIXES.md)
 
 ## Author
 

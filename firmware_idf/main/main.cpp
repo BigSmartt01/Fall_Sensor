@@ -230,7 +230,7 @@ void setup() {
   }
 
   // Connect WiFi and start TCP server
-  wifiStreamInit("Skill G Innovation", "INNOV8HUB", 3333);
+  wifiStreamInit("SkillGInnovation", "INNOV8HUB", 3333);
   //wifiStreamInit("BS-Andriod", "Dam_rat129!are", 3333);
 
   // DFRobot library uses begin() for range configuration
