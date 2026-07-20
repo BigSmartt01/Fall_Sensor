@@ -1,4 +1,5 @@
 #include "wifi_stream.h"
+#include "dashboard_html.h"
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -19,9 +20,11 @@
 #define TCP_TASK_STACK           4096
 #define TCP_TASK_PRIORITY        1
 #define DNS_PORT                 53
+#define WEB_SERVER_PORT          81
 
 // SoftAP default IP used by WiFi.softAP() and advertised via captive DNS.
 static const IPAddress kApIP(192, 168, 4, 1);
+static const char*     kMdnsHostname = "fallsensor";
 
 // Existing credential form HTML — keep byte-for-byte identical to prior behavior.
 static const char kPortalFormHtml[] =
@@ -39,7 +42,9 @@ static char          ipStr[20]   = "0.0.0.0";
 
 // ─── FORWARD DECLARATIONS ────────────────────────────────────────────────────
 static void tcpAcceptTask(void* pvParameters);
+static void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length);
 
+// ─── CREDENTIALS ─────────────────────────────────────────────────────────────
 Preferences prefs;
 WebServer server(80);
 DNSServer dnsServer;
@@ -158,8 +163,7 @@ bool tryConnect(const char* ssid, const char* password) {
 
 // ─── PUBLIC API ───────────────────────────────────────────────────────────────
 void wifiStreamInit(const char* ssid, const char* password, uint16_t port) {
-    (void)ssid;
-    (void)password;
+    (void)ssid; (void)password;
     tcpPort = port;
     clientMutex = xSemaphoreCreateMutex();
     if (clientMutex == NULL) {
@@ -170,46 +174,42 @@ void wifiStreamInit(const char* ssid, const char* password, uint16_t port) {
     WiFi.mode(WIFI_STA);
 
     String storedSsid, storedPass;
-    if (loadCredentials(storedSsid, storedPass)) {
-        if (tryConnect(storedSsid.c_str(), storedPass.c_str())) {
-            // Connected → start TCP server
-            strncpy(ipStr, WiFi.localIP().toString().c_str(), sizeof(ipStr) - 1);
-            tcpServer = new WiFiServer(tcpPort);
-            tcpServer->begin();
-            printf("[WiFi] TCP server listening on port %d\n", tcpPort);
-            printf("[WiFi] Connect dashboard with: TCP %s:%d\n", ipStr, tcpPort);
+    if (loadCredentials(storedSsid, storedPass) && tryConnect(storedSsid.c_str(), storedPass.c_str())) {
+        // Connected → start TCP server
+        strncpy(ipStr, WiFi.localIP().toString().c_str(), sizeof(ipStr) - 1);
 
-            // Spawn accept task
-            xTaskCreate(tcpAcceptTask, "TCP Accept", TCP_TASK_STACK, NULL, TCP_TASK_PRIORITY, NULL);
-            return;
+        // === mDNS ===
+        if (!MDNS.begin(kMdnsHostname)) {
+            printf("[WiFi] mDNS failed to start\n");
+        } else {
+            printf("[WiFi] mDNS started: http://%s.local\n", kMdnsHostname);
         }
+
+        tcpServer = new WiFiServer(tcpPort);
+        tcpServer->begin();
+        printf("[WiFi] TCP server on port %d | Web Dashboard: http://%s.local\n", tcpPort, kMdnsHostname);
+        // Spawn accept task
+        xTaskCreate(tcpAcceptTask, "TCP Accept", TCP_TASK_STACK, NULL, TCP_TASK_PRIORITY, NULL);
+
+        // Start WebSocket server + HTTP server
+        webSocket.begin();
+        webSocket.onEvent(webSocketEvent);
+        server.on("/", [](){ server.send(200, "text/html", dashboard_html); });
+        server.begin();
+
+        return;
     }
 
     // If no credentials or failed after retries → AP + captive portal
     startAP();
-    while (true) {
-        // DNSServer is AsyncUDP-based; processNextRequest() is a no-op stub.
-        // Keep the call for API familiarity / future core changes.
-        dnsServer.processNextRequest();
-        server.handleClient();
-        vTaskDelay(pdMS_TO_TICKS(10));
-    }
 }
 
 void wifiStreamSend(const char* line) {
-    if (clientMutex == NULL) return;
-    if (xSemaphoreTake(clientMutex, pdMS_TO_TICKS(5)) != pdTRUE) return;
-
-    if (tcpClient && tcpClient.connected()) {
-        tcpClient.print(line);
-        // Append newline if not present
-        size_t len = strlen(line);
-        if (len == 0 || line[len - 1] != '\n') {
-            tcpClient.print('\n');
-        }
+    if (clientMutex && xSemaphoreTake(clientMutex, pdMS_TO_TICKS(5)) == pdTRUE) {
+        if (tcpClient && tcpClient.connected()) tcpClient.print(line);
+        xSemaphoreGive(clientMutex);
     }
-
-    xSemaphoreGive(clientMutex);
+    webSocket.broadcastTXT(line);   // ← Send to all phone browsers too
 }
 
 void wifiStreamPrintf(const char* fmt, ...) {
@@ -219,6 +219,13 @@ void wifiStreamPrintf(const char* fmt, ...) {
     vsnprintf(buf, sizeof(buf), fmt, args);
     va_end(args);
     wifiStreamSend(buf);
+}
+
+// WebSocket event handler
+static void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length) {
+    if (type == WStype_CONNECTED) {
+        printf("[WebSocket] Client %u connected\n", num);
+    }
 }
 
 bool wifiStreamConnected(void) {

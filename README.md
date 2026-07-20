@@ -2,6 +2,11 @@
 
 ## Overview
 
+<p align="center">
+  <img src="docs/images/pcb_render.png" width="550"><br>
+  <em>3D render of the Fall Sensor carrier PCB (v1, single-layer)</em>
+</p>
+
 An intelligent wearable fall detection system built on the ESP32-C3 Super Mini with BMI160 IMU, targeting elderly users with waist/lower-back placement. The system combines a 4-stage rule-based state machine with an on-device CNN (TFLite Micro, int8 QAT) for high-confidence detection. A persistent alerted state holds the alert active until the person's posture changes or they self-dismiss, preventing the common problem of fall alerts clearing while the person is still on the floor.
 
 Real-time data streams over WiFi TCP to a PyQtGraph dashboard and InfluxDB/Grafana stack for threshold tuning and post-event analysis. A dual-purpose button handles both "I'm okay" dismissal and manual "I need help" alerts.
@@ -17,6 +22,13 @@ Real-time data streams over WiFi TCP to a PyQtGraph dashboard and InfluxDB/Grafa
 | Buzzer | Passive buzzer | Active LOW driver |
 | Button | Tactile switch | Dual-purpose: dismiss/SOS |
 | Board | 5x7cm perfboard | Power/signal zone separated |
+
+| Board | 5x7cm perfboard | Power/signal zone separated |
+
+<p align="center">
+  <img src="docs/images/perfboard_top.jpg" width="500"><br>
+  <em>Hand-soldered perfboard build, ESP32-C3 Super Mini + BMI160</em>
+</p>
 
 **Pin assignments (ESP32-C3 Super Mini):**
 
@@ -188,6 +200,11 @@ WIFI_PORT       = 3333
 
 The ESP32-C3 IP is printed on boot: `[WiFi] Connect dashboard with: TCP <IP>:3333`
 
+<p align="center">
+  <img src="docs/images/dashboard_impact.png" width="600"><br>
+  <em>Live dashboard showing a detected fall event: freefall, impact, then post-impact stillness</em>
+</p>
+
 ### InfluxDB + Grafana
 
 ```bash
@@ -241,7 +258,6 @@ ML training scripts require Python 3.10 in a separate venv (`venv_compat`) - Ten
 - SIM/GPS module on existing 5V rail for cellular fallback
 - BMI160 INT1/INT2 for hardware step detection and low-power motion-wake
 - Collect real elderly fall simulation data for model fine-tuning
-- ECG/biopotential front-end as next project (AD8232)
 
 ## Troubleshooting
 
