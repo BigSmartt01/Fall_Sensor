@@ -6,3 +6,6 @@
 	path = firmware_idf/components/esp-tflite-micro
 	url = https://github.com/espressif/esp-tflite-micro.git
 	branch = master
+[submodule "firmware_idf/components/WebSockets"]
+	path = firmware_idf/components/WebSockets
+	url = https://github.com/Links2004/arduinoWebSockets.git
