@@ -24,7 +24,7 @@ CONNECTION_MODE = "wifi"   # "serial" or "wifi" - switch this to change source
 SERIAL_PORT   = "COM7"
 BAUD_RATE     = 115200
 
-WIFI_HOST     = "192.168.101.204"   # ESP32-C3 IP, printed on boot under [WiFi] 10.164.56.82 | 192.168.101.204
+WIFI_HOST     = "fallsensor.local"   # ESP32-C3 IP, printed on boot under [WiFi] 10.164.56.82 | 192.168.101.204
 WIFI_PORT     = 3333
 
 INFLUX_URL    = "http://localhost:8086"

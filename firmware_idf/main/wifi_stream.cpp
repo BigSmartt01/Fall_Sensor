@@ -3,12 +3,14 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <ESPmDNS.h>          // <── added for mDNS support
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
 #include <Preferences.h>
 #include <WebServer.h>
 #include <DNSServer.h>
+#include <WebSocketsServer.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -47,6 +49,7 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t
 // ─── CREDENTIALS ─────────────────────────────────────────────────────────────
 Preferences prefs;
 WebServer server(80);
+WebSocketsServer webSocket(81);   // WebSocket on port 81
 DNSServer dnsServer;
 
 void saveCredentials(const char* ssid, const char* password) {
@@ -182,7 +185,7 @@ void wifiStreamInit(const char* ssid, const char* password, uint16_t port) {
         if (!MDNS.begin(kMdnsHostname)) {
             printf("[WiFi] mDNS failed to start\n");
         } else {
-            printf("[WiFi] mDNS started: http://%s.local\n", kMdnsHostname);
+            printf("[WiFi] mDNS started - reachable at %s.local\n", kMdnsHostname);  // ← updated message
         }
 
         tcpServer = new WiFiServer(tcpPort);
