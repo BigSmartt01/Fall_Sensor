@@ -15,14 +15,14 @@
 #define INT2_PIN    6
 #define BUZZER_PIN  2
 
-// Acts as dual-purpose button:
+// Dual‑purpose button:
 //   - During STATE_FALL_ALERTED: "I'm okay" -> dismiss alert, return to normal
 //   - During STATE_NORMAL/other: "I need help" -> manual alert, skips detection logic
-// Active LOW with internal pull-up.
+// Active LOW with internal pull‑up.
 #define BUTTON_PIN  3
 
-//const int8_t BMI160_I2C_ADDR = 0x68;  // SDIO pin connected to GND
-struct bmi160Dev dev;
+// BMI160 I2C address (SDIO pin connected to GND)
+//const uint8_t BMI160_I2C_ADDR = 0x68;  //Intentionally commented out since library already defined it
 
 DFRobot_BMI160 bmi160;
 
@@ -52,23 +52,25 @@ const float  GRAVITY_FILTER_ALPHA = 0.05;
 
 // Orientation captured at the moment a fall is confirmed.
 // Recovery from STATE_FALL_ALERTED is judged against THIS, not the
-// pre-fall gravity baseline - the person is expected to still be down
+// pre‑fall gravity baseline - the person is expected to still be down
 // until their posture deliberately changes again.
 static float fallOrientX = 0, fallOrientY   = 0, fallOrientZ = 0;
-const float  RECOVERY_ORIENTATION_THRESHOLD = 5.0;      // larger than fall-detection threshold - needs deliberate posture change
-const unsigned long ALERT_BUZZ_INTERVAL     = 10000;    // re-buzz every 10s while alerted
+const float  RECOVERY_ORIENTATION_THRESHOLD = 5.0;      // larger than fall‑detection threshold - needs deliberate posture change
+const unsigned long ALERT_BUZZ_INTERVAL     = 10000;    // re‑buzz every 10s while alerted
 
+// Rolling history for post‑impact stillness variance
 static float accelHistory[10] = {0};
 static int   historyIndex     = 0;
 const int    HISTORY_SIZE     = 10;
 
-const float         FREEFALL_THRESHOLD             = 3.0;
-const float         IMPACT_THRESHOLD               = 20.0;
-const float         GYRO_STILLNESS_THRESHOLD       = 25.0;
-const float         ORIENTATION_CHANGE_THRESHOLD   = 0.5;
-const unsigned long FREEFALL_TIMEOUT               = 400;
-const unsigned long IMPACT_WINDOW                  = 500;
-const unsigned long POST_IMPACT_STILLNESS_DURATION = 2500;
+// ─── REFACTORED THRESHOLDS (±16g range) ──────────────────────────────────────
+const float FREEFALL_THRESHOLD = 6.0;   // ~0.6 g – achievable during a human fall
+const float         IMPACT_THRESHOLD               = 40.0;  // ~4g – real fall impact
+const float         GYRO_STILLNESS_THRESHOLD       = 25.0;  // °/s
+const float         ORIENTATION_CHANGE_THRESHOLD   = 0.5;   // m/s² vector difference
+const unsigned long FREEFALL_TIMEOUT               = 400;   // ms
+const unsigned long IMPACT_WINDOW                  = 500;   // ms
+const unsigned long POST_IMPACT_STILLNESS_DURATION = 2500;  // ms
 
 TaskHandle_t fallDetectionTaskHandle    = NULL;
 TaskHandle_t activityTriggerTaskHandle  = NULL;
@@ -85,8 +87,7 @@ void fallDetectionTask(void *pvParameters);
 void activityTriggerTask(void *pvParameters);
 void buttonTask(void *pvParameters);
 
-// ─── CONVERSION HELPERS ───────────────────────────────────────────────────────
-// BMI160 accel at ±2g: 16384 LSB/g
+// ─── CONVERSION HELPERS (unchanged - just called with range=16) ──────────────
 float accelRawToG(int16_t raw, int range) {
   float scale;
   switch (range) {
@@ -103,7 +104,6 @@ float accelRawToMS2(int16_t raw, int range) {
   return accelRawToG(raw, range) * 9.81;
 }
 
-// BMI160 gyro at ±2000 deg/s: 16.4 LSB/deg/s
 float gyroRawToDPS(int16_t raw, int range) {
   float scale;
   switch (range) {
@@ -132,7 +132,6 @@ float getAccelVariance(float newAccel) {
   return variance / HISTORY_SIZE;
 }
 
-// Generic orientation delta vs an arbitrary reference vector.
 float getOrientationDelta(float cx, float cy, float cz, float refX, float refY, float refZ) {
   return magnitude(cx - refX, cy - refY, cz - refZ);
 }
@@ -153,8 +152,7 @@ void captureFallOrientation(float x, float y, float z) {
   fallOrientZ = z;
 }
 
-// Feature fed into the CNN sliding window.
-// x_train_3 was vertical accel in g (not m/s²) - match that scale here.
+// Feature fed into the CNN sliding window: vertical accel in g (matching training scale)
 static float featureForInference(const SensorData& s) {
   return s.accelY / 9.81f;
 }
@@ -169,7 +167,7 @@ void setup() {
   delay(500);
 
   pinMode(BUZZER_PIN, OUTPUT);
-  pinMode(BUTTON_PIN, INPUT_PULLUP);  // placeholder - active LOW when wired
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
 
   eventGroup = xEventGroupCreate();
   if (eventGroup == NULL) {
@@ -183,42 +181,34 @@ void setup() {
     printf("BMI160 reset failed!\n");
     while (1);
   }
-
   delay(100);
 
   if (bmi160.I2cInit(BMI160_I2C_ADDR) != BMI160_OK) {
     printf("BMI160 init failed!\n");
-    while (1) {
-    }
+    while (1);
   }
+
   // Set BMI160 accel and gyro ODR to 200Hz via direct register write
-  // Register 0x40 (ACC_CONF): bits[3:0] = ODR, 0x09 = 200Hz
-  // Register 0x42 (GYR_CONF): bits[3:0] = ODR, 0x09 = 200Hz
-  uint8_t regVal = 0;
-
   Wire.beginTransmission(0x68);
-  Wire.write(0x40);
-  Wire.write(0x09);
-  Wire.endTransmission(false);
-  Wire.requestFrom(0x68, 1);
-  if (Wire.available()) {
-    regVal = Wire.read();
-    printf("ACC_CONF register value: 0x%02X\n", regVal);
-  }
+  Wire.write(0x40);       // ACC_CONF
+  Wire.write(0x09);       // 200Hz
+  Wire.endTransmission();
   delay(10);
 
   Wire.beginTransmission(0x68);
-  Wire.write(0x42);
-  Wire.write(0x09);
-  Wire.endTransmission(false);
-  Wire.requestFrom(0x68, 1);
-  if (Wire.available()) {
-    regVal = Wire.read();
-    printf("GYR_CONF register value: 0x%02X\n", regVal);
-  }
+  Wire.write(0x42);       // GYR_CONF
+  Wire.write(0x09);       // 200Hz
+  Wire.endTransmission();
   delay(10);
-
   printf("BMI160 ODR set to 200Hz\n");
+
+  // Set accelerometer range to ±16g (needed to capture real fall impacts)
+  Wire.beginTransmission(0x68);
+  Wire.write(0x41);       // ACC_RANGE
+  Wire.write(0x0C);       // ±16g
+  Wire.endTransmission();
+  delay(10);
+  printf("BMI160 accelerometer range set to ±16g\n");
 
   printf("BMI160 Ready\n");
 
@@ -231,10 +221,6 @@ void setup() {
 
   // Connect WiFi and start TCP server
   wifiStreamInit("SkillGInnovation", "INNOV8HUB", 3333);
-  //wifiStreamInit("BS-Andriod", "Dam_rat129!are", 3333);
-
-  // DFRobot library uses begin() for range configuration
-  // Default ranges after I2cInit: accel ±2g, gyro ±2000 deg/s
 
   printf("\n=== Initializing Neural Network ===\n");
   if (!initializeInference()) {
@@ -247,7 +233,7 @@ void setup() {
 
   xTaskCreate(fallDetectionTask,   "Fall Detection",  4096, NULL, 2, &fallDetectionTaskHandle);
   xTaskCreate(activityTriggerTask, "Activity Trigger", 2048, NULL, 1, &activityTriggerTaskHandle);
-  xTaskCreate(buttonTask,          "Button Watch",     2048, NULL, 1, &buttonTaskHandle);
+  xTaskCreate(buttonTask,          "Button Watch",     3072, NULL, 1, &buttonTaskHandle);  // increased stack for printf
 
   printf("RTOS tasks created.\n");
 }
@@ -263,15 +249,15 @@ void fallDetectionTask(void *pvParameters) {
     int16_t accelGyro[6] = {0};
     bmi160.getAccelGyroData(accelGyro);
 
-    // Gyro: indices 0-2
+    // Gyro: indices 0-2 (range ±2000 dps)
     sensorData.gyroX  = gyroRawToDPS(accelGyro[0], 2000);
     sensorData.gyroY  = gyroRawToDPS(accelGyro[1], 2000);
     sensorData.gyroZ  = gyroRawToDPS(accelGyro[2], 2000);
 
-    // Accel: indices 3-5
-    sensorData.accelX = accelRawToMS2(accelGyro[3], 2);
-    sensorData.accelY = accelRawToMS2(accelGyro[4], 2);
-    sensorData.accelZ = accelRawToMS2(accelGyro[5], 2);
+    // Accel: indices 3-5 (range ±16g)
+    sensorData.accelX = accelRawToMS2(accelGyro[3], 16);
+    sensorData.accelY = accelRawToMS2(accelGyro[4], 16);
+    sensorData.accelZ = accelRawToMS2(accelGyro[5], 16);
 
     sensorData.accelMag  = magnitude(sensorData.accelX, sensorData.accelY, sensorData.accelZ);
     sensorData.gyroMag   = magnitude(sensorData.gyroX,  sensorData.gyroY,  sensorData.gyroZ);
@@ -363,8 +349,6 @@ void fallDetectionTask(void *pvParameters) {
 
       case STATE_FALL_CONFIRMED: {
         // One-shot transition into the persistent alerted state.
-        // Capture the orientation at this exact moment - recovery is
-        // judged against THIS posture, not the pre-fall gravity baseline.
         captureFallOrientation(sensorData.accelX, sensorData.accelY, sensorData.accelZ);
 
         printf("FALL,%lu\n", millis());
@@ -379,9 +363,6 @@ void fallDetectionTask(void *pvParameters) {
       }
 
       case STATE_FALL_ALERTED: {
-        // Person is presumed still down. Stay here until either:
-        //   1. Orientation changes significantly from the fall-moment posture (handled here), or
-        //   2. The "I'm okay" button is pressed (handled directly in buttonTask)
         float recoveryDelta = getOrientationDelta(
           sensorData.accelX, sensorData.accelY, sensorData.accelZ,
           fallOrientX, fallOrientY, fallOrientZ
@@ -392,7 +373,7 @@ void fallDetectionTask(void *pvParameters) {
           lastAlertBuzzTime = millis();
           xEventGroupSetBits(eventGroup, ACTIVITY_TRIGGERED_BIT);
         }
-  
+
         static unsigned long recoveryStart = 0;
         if (recoveryDelta > RECOVERY_ORIENTATION_THRESHOLD) {
           if (recoveryStart == 0) recoveryStart = millis();
@@ -418,14 +399,11 @@ void fallDetectionTask(void *pvParameters) {
         sensorData.timestamp, sensorData.accelMag, sensorData.gyroMag, (int)fallState);
     }
 
-    vTaskDelay(5 / portTICK_PERIOD_MS);  // 50Hz sampling
+    vTaskDelay(5 / portTICK_PERIOD_MS);  // 200Hz sampling
   }
 }
 
 // ─── TASK 2: ACTIVITY TRIGGER ─────────────────────────────────────────────────
-// Each ACTIVITY_TRIGGERED_BIT firing produces one ~2s buzz pulse.
-// Persistence comes from STATE_FALL_ALERTED re-setting this bit every
-// ALERT_BUZZ_INTERVAL, not from a single long tone here.
 void activityTriggerTask(void *pvParameters) {
   EventBits_t uxBits;
   while (1) {
@@ -446,12 +424,8 @@ void activityTriggerTask(void *pvParameters) {
 }
 
 // ─── TASK 3: BUTTON WATCH ─────────────────────────────────────────────────────
-// Placeholder until physically wired - polls BUTTON_PIN with simple debounce.
-// Dual purpose depending on current fallState:
-//   - STATE_FALL_ALERTED -> "I'm okay": dismiss alert, return to STATE_NORMAL
-//   - anything else      -> "I need help": manual alert, same buzzer path
 void buttonTask(void *pvParameters) {
-  bool lastReading = HIGH;  // assumes INPUT_PULLUP, idle HIGH
+  bool lastReading = HIGH;
   unsigned long lastChangeTime = 0;
   const unsigned long DEBOUNCE_MS = 50;
 
@@ -463,7 +437,6 @@ void buttonTask(void *pvParameters) {
     }
 
     if ((millis() - lastChangeTime) > DEBOUNCE_MS && reading == LOW) {
-      // Button confirmed pressed
       if (fallState == STATE_FALL_ALERTED) {
         printf("BUTTON: \"I'm okay\" pressed - dismissing alert\n");
         fallState = STATE_NORMAL;
@@ -472,20 +445,15 @@ void buttonTask(void *pvParameters) {
         printf("FALL,%lu\n", millis());
         wifiStreamPrintf("FALL,%lu\n", millis());
         xEventGroupSetBits(eventGroup, ACTIVITY_TRIGGERED_BIT);
-        // Manual help does not enter STATE_FALL_ALERTED automatically -
-        // person is conscious enough to press a button, so no persistent
-        // "down" assumption is made here. Revisit if this should also
-        // hold until a separate dismissal.
       }
 
-      // Wait for release before allowing another trigger
       while (digitalRead(BUTTON_PIN) == LOW) {
         vTaskDelay(5 / portTICK_PERIOD_MS);
       }
     }
 
     lastReading = reading;
-    vTaskDelay(5 / portTICK_PERIOD_MS); // 200Hz sampling
+    vTaskDelay(5 / portTICK_PERIOD_MS);
   }
 }
 

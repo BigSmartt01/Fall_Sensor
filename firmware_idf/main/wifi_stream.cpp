@@ -1,16 +1,17 @@
 #include "wifi_stream.h"
 #include "dashboard_html.h"
+#include "portal_html.h"
 
 #include <Arduino.h>
 #include <WiFi.h>
-#include <ESPmDNS.h>          // <── added for mDNS support
+#include <ESPmDNS.h>
+#include <WebSocketsServer.h>   // WebSocket server
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
 #include <Preferences.h>
 #include <WebServer.h>
 #include <DNSServer.h>
-#include <WebSocketsServer.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -42,14 +43,21 @@ static uint16_t      tcpPort     = 3333;
 static SemaphoreHandle_t clientMutex = NULL;
 static char          ipStr[20]   = "0.0.0.0";
 
+// WebSocket server on port 81 (dashboard streaming)
+WebSocketsServer webSocket(WEB_SERVER_PORT);
+
+// Activity flags for the service polling task
+static bool dnsActive       = false;
+static bool webSocketActive = false;
+
 // ─── FORWARD DECLARATIONS ────────────────────────────────────────────────────
 static void tcpAcceptTask(void* pvParameters);
 static void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length);
+static void webServiceTask(void* pvParameters);   // NEW
 
 // ─── CREDENTIALS ─────────────────────────────────────────────────────────────
 Preferences prefs;
 WebServer server(80);
-WebSocketsServer webSocket(81);   // WebSocket on port 81
 DNSServer dnsServer;
 
 void saveCredentials(const char* ssid, const char* password) {
@@ -69,11 +77,10 @@ bool loadCredentials(String &ssid, String &pass) {
 
 // Serve the WiFi credential form (same HTML as before).
 static void sendPortalForm() {
-    server.send(200, "text/html", kPortalFormHtml);
+    server.send(200, "text/html", portal_html);
 }
 
 // HTTP 302 to the portal root — used for OS captive-portal probes and unknown URLs.
-// When the probe does not get its expected "success" body, the OS opens this page.
 static void redirectToPortal() {
     String location = String("http://") + WiFi.softAPIP().toString() + "/";
     server.sendHeader("Location", location, true);
@@ -84,7 +91,6 @@ void startAP() {
     WiFi.mode(WIFI_AP);
     WiFi.softAP("FallSensor_AP", "12345678");
 
-    // Advertise captive-portal URL via DHCP option 114 (IDF >= 5.4.2 / modern OSes).
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 4, 2)
     if (WiFi.AP.enableDhcpCaptivePortal()) {
         printf("[WiFi] DHCP captive portal URI enabled\n");
@@ -93,11 +99,10 @@ void startAP() {
     }
 #endif
 
-    // Catch-all DNS: every query resolves to the softAP IP so phones hit our HTTP server.
-    // domainName "*" → captive mode (empty domain match in DNSServer).
     if (dnsServer.start(DNS_PORT, "*", kApIP)) {
         printf("[WiFi] DNS captive portal started (all queries -> %s)\n",
                kApIP.toString().c_str());
+        dnsActive = true;      // signal task to poll DNS
     } else {
         printf("[WiFi] ERROR: DNS server failed to start\n");
     }
@@ -105,12 +110,10 @@ void startAP() {
     printf("[WiFi] AP started. Connect to SSID 'FallSensor_AP' — captive portal opens automatically\n");
     printf("[WiFi] Manual fallback: open http://%s/\n", WiFi.softAPIP().toString().c_str());
 
-    // Credential form (unchanged)
     server.on("/", []() {
         sendPortalForm();
     });
 
-    // NVS save + reboot (unchanged)
     server.on("/save", []() {
         String ssid = server.arg("ssid");
         String pass = server.arg("pass");
@@ -121,31 +124,26 @@ void startAP() {
     });
 
     // ── Captive portal detection endpoints ────────────────────────────────────
-    // Phones hit these after connecting. Any non-"success" response (redirect or
-    // portal HTML) triggers the automatic login / CNA popup.
-
-    // Android ConnectivityManager (and some Chromebook / Fire OS variants)
     server.on("/generate_204", HTTP_ANY, redirectToPortal);
     server.on("/gen_204", HTTP_ANY, redirectToPortal);
-
-    // Apple Captive Network Assistant (iOS / macOS)
     server.on("/hotspot-detect.html", HTTP_ANY, sendPortalForm);
     server.on("/library/test/success.html", HTTP_ANY, sendPortalForm);
-
-    // Windows NCSI
     server.on("/connecttest.txt", HTTP_ANY, redirectToPortal);
     server.on("/ncsi.txt", HTTP_ANY, redirectToPortal);
     server.on("/redirect", HTTP_ANY, redirectToPortal);
     server.on("/fwlink", HTTP_ANY, redirectToPortal);
-
-    // Firefox / misc
     server.on("/success.txt", HTTP_ANY, redirectToPortal);
     server.on("/canonical.html", HTTP_ANY, sendPortalForm);
-
-    // Any other host/path (DNS already pointed here) → portal
     server.onNotFound(redirectToPortal);
 
     server.begin();
+
+    // ── Start the service polling task (only once globally) ─────────────────
+    static bool webServiceTaskCreated = false;
+    if (!webServiceTaskCreated) {
+        xTaskCreate(webServiceTask, "WebSvc", 4096, NULL, 1, NULL);
+        webServiceTaskCreated = true;
+    }
 }
 
 bool tryConnect(const char* ssid, const char* password) {
@@ -185,20 +183,28 @@ void wifiStreamInit(const char* ssid, const char* password, uint16_t port) {
         if (!MDNS.begin(kMdnsHostname)) {
             printf("[WiFi] mDNS failed to start\n");
         } else {
-            printf("[WiFi] mDNS started - reachable at %s.local\n", kMdnsHostname);  // ← updated message
+            printf("[WiFi] mDNS started - reachable at %s.local\n", kMdnsHostname);
         }
 
         tcpServer = new WiFiServer(tcpPort);
         tcpServer->begin();
         printf("[WiFi] TCP server on port %d | Web Dashboard: http://%s.local\n", tcpPort, kMdnsHostname);
-        // Spawn accept task
         xTaskCreate(tcpAcceptTask, "TCP Accept", TCP_TASK_STACK, NULL, TCP_TASK_PRIORITY, NULL);
 
         // Start WebSocket server + HTTP server
         webSocket.begin();
         webSocket.onEvent(webSocketEvent);
+        webSocketActive = true;        // signal task to poll WebSocket
+
         server.on("/", [](){ server.send(200, "text/html", dashboard_html); });
         server.begin();
+
+        // ── Start the service polling task (only once globally) ─────────────
+        static bool webServiceTaskCreated = false;
+        if (!webServiceTaskCreated) {
+            xTaskCreate(webServiceTask, "WebSvc", 4096, NULL, 1, NULL);
+            webServiceTaskCreated = true;
+        }
 
         return;
     }
@@ -212,7 +218,7 @@ void wifiStreamSend(const char* line) {
         if (tcpClient && tcpClient.connected()) tcpClient.print(line);
         xSemaphoreGive(clientMutex);
     }
-    webSocket.broadcastTXT(line);   // ← Send to all phone browsers too
+    webSocket.broadcastTXT(line);
 }
 
 void wifiStreamPrintf(const char* fmt, ...) {
@@ -244,15 +250,12 @@ const char* wifiStreamIP(void) {
 }
 
 // ─── TCP ACCEPT TASK ─────────────────────────────────────────────────────────
-// Runs forever, polls for new client connections and cleans up dropped ones.
-// Low priority (1) - never blocks the 50Hz fall detection task (priority 2).
 static void tcpAcceptTask(void* pvParameters) {
     while (1) {
         if (tcpServer) {
             WiFiClient newClient = tcpServer->accept();
             if (newClient) {
                 if (xSemaphoreTake(clientMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-                    // Disconnect any existing client before accepting new one
                     if (tcpClient && tcpClient.connected()) {
                         tcpClient.stop();
                         printf("[WiFi] Previous client disconnected, new client accepted\n");
@@ -265,7 +268,6 @@ static void tcpAcceptTask(void* pvParameters) {
                 }
             }
 
-            // Check if current client dropped
             if (xSemaphoreTake(clientMutex, pdMS_TO_TICKS(5)) == pdTRUE) {
                 if (tcpClient && !tcpClient.connected()) {
                     tcpClient.stop();
@@ -275,6 +277,20 @@ static void tcpAcceptTask(void* pvParameters) {
             }
         }
 
-        vTaskDelay(pdMS_TO_TICKS(100));  // poll every 100ms
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+}
+
+// ─── SERVICE POLLING TASK ────────────────────────────────────────────────────
+static void webServiceTask(void* pvParameters) {
+    while (1) {
+        if (dnsActive) {
+            dnsServer.processNextRequest();
+        }
+        server.handleClient();              // HTTP always needed
+        if (webSocketActive) {
+            webSocket.loop();
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));      // 100 Hz polling
     }
 }

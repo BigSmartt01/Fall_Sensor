@@ -1,12 +1,8 @@
 idf_component_register(
-    SRCS
-        "../WebSockets/src/WebSockets.cpp"
-        "../WebSockets/src/WebSocketsClient.cpp"
+    SRCS 
+        "../WebSockets/src/WebSockets.cpp" 
+        "../WebSockets/src/WebSocketsClient.cpp" 
         "../WebSockets/src/WebSocketsServer.cpp"
-        "../WebSockets/src/SocketIOclient.cpp"
-    INCLUDE_DIRS
-        "../WebSockets/src"
-    REQUIRES
-        lwip
-        esp_wifi
+    INCLUDE_DIRS "../WebSockets/src"
+    REQUIRES arduino-esp32
 )
